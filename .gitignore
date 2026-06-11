@@ -1,0 +1,25 @@
+# TRAMA — .gitignore (raíz del repo)
+
+# Secretos — JAMÁS al repo. La service key escribe sobre el archivo "inmutable".
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node / Next.js (para la fase web)
+node_modules/
+.next/
+out/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/

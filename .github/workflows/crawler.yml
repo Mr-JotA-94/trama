@@ -1,0 +1,40 @@
+# TRAMA — Crawler automatizado
+# Archivo: .github/workflows/crawler.yml
+#
+# Corre el crawler cada 6 horas + permite disparo manual (workflow_dispatch),
+# que usaremos como prueba de fuego: los runners de Actions tienen IPs de
+# datacenter y algunos medios podrían bloquearlas (ya vimos 403 desde el
+# entorno de Anthropic). La primera corrida manual nos dirá la verdad.
+
+name: crawler
+
+on:
+  schedule:
+    # Cada 6 horas (UTC). Colombia es UTC-5: corre ~01:00, 07:00, 13:00, 19:00 hora CO.
+    - cron: "0 0,6,12,18 * * *"
+  workflow_dispatch: {}   # botón "Run workflow" para corridas manuales
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30   # red de seguridad: si algo se cuelga, lo mata
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"   # fijamos 3.12 (probaste local en 3.14; 3.12 es la estable para CI)
+
+      - name: Instalar dependencias
+        working-directory: crawler
+        run: pip install -r requirements.txt
+
+      - name: Correr crawler
+        working-directory: crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python crawler.py
