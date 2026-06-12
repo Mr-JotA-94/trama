@@ -209,6 +209,8 @@ BOILERPLATE = [
     "políticas de la ia",
     "suscríbete e inicia la conversación",
     "uso de cookies no esenciales",
+    "escucha este artículo",
+    "audio generado con ia",
 ]
 
 
@@ -227,6 +229,10 @@ def limpiar_contenido(texto: str, titulo: str = "") -> str:
         ls = l.strip()
         # Etiquetas sueltas de sección que no son contenido
         if ls.lower() in ("noticia", "aquí", "publicidad"):
+            continue
+        # Residuos de reproductores: líneas que son solo dígitos,
+        # dos puntos o barras ("0:00", "/")
+        if ls and len(ls) <= 8 and all(c in "0123456789:/ " for c in ls):
             continue
         if any(m in ls.lower() for m in BOILERPLATE):
             continue

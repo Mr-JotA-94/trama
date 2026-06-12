@@ -1,0 +1,218 @@
+/* =====================================================================
+   TRAMA — sistema de diseño v1
+   Papel, tinta, resaltador, hilo. Esquinas rectas: el papel no tiene
+   border-radius. Una sola animación: el hilo se dibuja al cargar.
+   ===================================================================== */
+
+:root {
+  --tinta: #171a2e;        /* texto principal, negro azulado de imprenta */
+  --papel: #fcfbf6;        /* fondo, papel de periódico nuevo */
+  --resaltador: #ffc23d;   /* ámbar: marca las técnicas (Fase 3) */
+  --hilo: #c8442e;         /* rojo del hilo de investigación */
+  --verificado: #2e6e4e;   /* verde sobrio: confirmado en el clúster */
+  --gris-archivo: #8c8a82; /* metadatos, timestamps, hashes */
+  --linea: 1px solid var(--tinta);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--papel);
+  color: var(--tinta);
+  font-family: var(--f-body), Georgia, serif;
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+a { color: inherit; }
+
+/* ---- Membrete ------------------------------------------------------ */
+.masthead { border-bottom: var(--linea); }
+.masthead-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 28px 20px 18px;
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.brand {
+  font-family: var(--f-display), sans-serif;
+  font-size: 2.4rem;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+}
+.tagline {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--gris-archivo);
+}
+
+/* El hilo rojo: única animación del sitio. Se dibuja de izquierda a
+   derecha al cargar; quietos si el usuario prefiere menos movimiento. */
+.hilo {
+  height: 3px;
+  background: var(--hilo);
+  transform-origin: left;
+  animation: dibujar-hilo 0.9s ease-out;
+}
+@keyframes dibujar-hilo {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hilo { animation: none; }
+}
+
+/* ---- Estructura ----------------------------------------------------- */
+.contenedor { max-width: 880px; margin: 0 auto; padding: 28px 20px 60px; }
+
+.pie {
+  border-top: var(--linea);
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  color: var(--gris-archivo);
+}
+.pie-fase { margin-top: 6px; font-family: var(--f-mono), monospace; }
+
+/* ---- Registro de capturas (feed) ------------------------------------ */
+.dia-titulo {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--gris-archivo);
+  margin: 30px 0 6px;
+}
+
+/* Cada captura cuelga del hilo: borde izquierdo rojo, como fichas
+   prendidas a la línea de un tablero de investigación. */
+.captura {
+  border-left: 3px solid var(--hilo);
+  padding: 12px 0 12px 16px;
+  margin-left: 4px;
+}
+.captura + .captura { border-top: 1px dotted var(--gris-archivo); }
+
+.captura-meta {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.74rem;
+  color: var(--gris-archivo);
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.captura-titulo {
+  font-size: 1.12rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin-top: 4px;
+}
+.captura-titulo a { text-decoration: none; }
+.captura-titulo a:hover { text-decoration: underline; text-decoration-color: var(--hilo); }
+
+/* Etiquetas: tipo de pieza y medio */
+.tag {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border: 1px solid var(--tinta);
+  padding: 1px 7px;
+  text-decoration: none;
+}
+
+/* Tintas de archivo: una por medio, asignadas por TRAMA (no colores de
+   marca ni de partido). Rojo, ámbar y verde puro quedan reservados para
+   hilo, resaltador y verificado. Fallback: tinta. */
+.medio-voragine      { --c-medio: #5b3a8c; }  /* violeta   */
+.medio-las2orillas   { --c-medio: #946800; }  /* ocre      */
+.medio-el-espectador { --c-medio: #0f7c7c; }  /* verdeazul */
+.medio-el-tiempo     { --c-medio: #1f6fb2; }  /* azul      */
+.medio-el-colombiano { --c-medio: #7a4a21; }  /* marrón    */
+
+.tag-medio {
+  background: var(--c-medio, var(--tinta));
+  border-color: var(--c-medio, var(--tinta));
+  color: var(--papel);
+  font-weight: 600;
+}
+.tag-opinion   { background: var(--tinta); color: var(--papel); }
+.tag-parcial   { border-color: transparent; background: var(--resaltador); color: var(--tinta); }
+
+/* ---- Página de artículo --------------------------------------------- */
+.expediente {
+  border: var(--linea);
+  padding: 14px 16px;
+  margin: 18px 0 26px;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.78rem;
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  row-gap: 6px;
+  column-gap: 12px;
+  word-break: break-all;
+}
+.expediente dt { color: var(--gris-archivo); }
+
+.articulo-titulo {
+  font-family: var(--f-display), sans-serif;
+  font-size: 1.9rem;
+  line-height: 1.2;
+  margin-top: 18px;
+}
+.articulo-sub { font-size: 1.1rem; color: var(--gris-archivo); margin-top: 10px; }
+.articulo-cuerpo { margin-top: 26px; max-width: 680px; }
+.articulo-cuerpo p { margin-bottom: 1em; }
+
+.aviso-parcial {
+  background: var(--resaltador);
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.85rem;
+  padding: 10px 14px;
+  margin: 18px 0;
+}
+
+.enlace-original {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.85rem;
+  display: inline-block;
+  margin-top: 24px;
+  border-bottom: 2px solid var(--hilo);
+  text-decoration: none;
+}
+.enlace-superior { margin-top: 0; margin-bottom: 4px; }
+
+/* ---- Página de medio ------------------------------------------------- */
+.medio-cabecera { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.medio-nombre { font-family: var(--f-display), sans-serif; font-size: 1.7rem; }
+.medio-stats {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.78rem;
+  color: var(--gris-archivo);
+  margin-top: 8px;
+}
+.perfil-pendiente {
+  border: 1px dashed var(--gris-archivo);
+  padding: 14px 16px;
+  margin: 22px 0;
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.85rem;
+  color: var(--gris-archivo);
+}
+
+/* ---- Accesibilidad y móvil ------------------------------------------ */
+:focus-visible { outline: 3px solid var(--hilo); outline-offset: 2px; }
+
+@media (max-width: 560px) {
+  .brand { font-size: 1.8rem; }
+  .expediente { grid-template-columns: 1fr; }
+  .articulo-titulo { font-size: 1.45rem; }
+}
