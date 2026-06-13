@@ -64,6 +64,25 @@ PATRONES_TIPO = [
     (r"(afp|efe|reuters|europa-press)", "agencia"),
 ]
 
+def extraer_seccion(url: str, regla: dict) -> str | None:
+    """Extrae la sección según la regla configurada por medio."""
+    metodo = (regla or {}).get("metodo", "primer_segmento")
+    if metodo == "fijo":
+        return regla.get("valor")
+    if metodo == "ninguno":
+        return None
+    if metodo == "primer_segmento":
+        # https://medio.com/seccion/sub/titulo → 'seccion'
+        try:
+            path = url.split("//", 1)[1].split("/", 1)[1]  # quita dominio
+            primer = path.split("/", 1)[0].strip().lower()
+            # Un slug largo con guiones es título, no sección (caso Las2orillas
+            # si alguna vez cae aquí). Sección real: corta, sin muchos guiones.
+            if primer and len(primer) <= 20 and primer.count("-") <= 1:
+                return primer
+        except (IndexError, AttributeError):
+            pass
+    return None
 
 def clasificar_tipo(url: str) -> str:
     u = url.lower()
@@ -140,6 +159,33 @@ def obtener_urls_de_fuente(cliente: httpx.Client, fuente: dict) -> list[dict]:
 # ---------------------------------------------------------------------
 # Extracción de artículo
 # ---------------------------------------------------------------------
+
+def detectar_paywall_jsonld(html: str) -> bool:
+    """Lee isAccessibleForFree del JSON-LD. El medio declara aquí si la nota
+    es de pago — señal limpia, no depende de longitud ni de overlays JS."""
+    # Tolerante a espacios/comillas: "isAccessibleForFree" : "false"  o  false
+    m = re.search(r'"isAccessibleForFree"\s*:\s*"?(false|true)"?', html, re.I)
+    if m:
+        return m.group(1).lower() == "false"  # false = de pago = parcial
+    return False
+
+def meta_content(html: str, name: str) -> str | None:
+    """Extrae el content de un <meta name=... > o property=... del HTML."""
+    for attr in ("name", "property"):
+        m = re.search(
+            rf'<meta[^>]*{attr}=["\']{re.escape(name)}["\'][^>]*content=["\']([^"\']*)["\']',
+            html, re.I,
+        )
+        if not m:
+            m = re.search(
+                rf'<meta[^>]*content=["\']([^"\']*)["\'][^>]*{attr}=["\']{re.escape(name)}["\']',
+                html, re.I,
+            )
+        if m:
+            return m.group(1).strip() or None
+    return None
+
+
 def extraer_articulo(cliente: httpx.Client, url: str) -> dict | None:
     """Descarga y extrae SOLO el contenido visible públicamente."""
     try:
@@ -148,7 +194,6 @@ def extraer_articulo(cliente: httpx.Client, url: str) -> dict | None:
             return None
         extraido = trafilatura.bare_extraction(
             r.text, url=url, with_metadata=True, include_comments=False,
-            favor_precision=True,
         )
         if not extraido:
             return None
@@ -161,35 +206,55 @@ def extraer_articulo(cliente: httpx.Client, url: str) -> dict | None:
 
         contenido = (campo("text") or "").strip()
         titulo = (campo("title") or "").strip()
+
+        # Subtítulo: trafilatura usa og:description. Algunos medios (El
+        # Colombiano hoy) ahí ponen el primer párrafo en vez de la bajada.
+        # Detectamos el síntoma —no el medio— y caemos a twitter:description.
+        subtitulo = (campo("description") or "").strip() or None
+        if subtitulo and contenido.startswith(subtitulo[:60]):
+            # og duplica el cuerpo: no es bajada real. Probar respaldo.
+            respaldo = meta_content(r.text, "twitter:description")
+            if respaldo and not contenido.startswith(respaldo[:60]):
+                subtitulo = respaldo   # el respaldo SÍ es una bajada distinta
+            else:
+                subtitulo = None        # ningún meta sirve: mejor sin subtítulo
+
         if not titulo or len(contenido) < 100:
             # Sin título o casi sin texto visible: no vale como snapshot
             return None
         return {
             "titulo": titulo,
-            "subtitulo": (campo("description") or "").strip() or None,
+            "subtitulo": subtitulo,
             "autor": (campo("author") or "").strip() or None,
             "fecha_publicacion": campo("date"),  # ISO o None
             "contenido_visible": contenido,
+            "paywall_jsonld": detectar_paywall_jsonld(r.text),
         }
     except Exception as e:
         print(f"    ERROR artículo {url[:60]}: {type(e).__name__}: {str(e)[:60]}")
         return None
-
+    
 
 def calcular_hash(titulo: str, subtitulo: str | None, contenido: str) -> str:
     base = f"{titulo}|{subtitulo or ''}|{contenido}"
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 
+MARCADORES_PAYWALL = [
+    "contenido exclusivo para suscriptores",
+    "regístrese para seguir leyendo",
+    "regístrate para seguir leyendo",
+    "suscríbase para continuar",
+    "este contenido es exclusivo",
+    "ya tienes una cuenta",
+]
+
+
 def detectar_parcial(contenido: str, nivel_paywall: str) -> bool:
-    """Heurística: en medios con paywall, contenido corto = probablemente cortado."""
     if nivel_paywall == "abierto":
         return False
-    marcadores = ["suscríbete", "suscríbase", "contenido exclusivo", "regístrate para seguir leyendo"]
     texto = contenido.lower()
-    if any(m in texto for m in marcadores):
-        return True
-    return len(contenido) < 900  # umbral inicial, calibrar con muestreo
+    return any(m in texto for m in MARCADORES_PAYWALL)
 
 # Líneas de boilerplate conocidas por medio. Si una línea del contenido
 # contiene alguno de estos marcadores, se descarta. Calibrar con muestreo.
@@ -214,24 +279,39 @@ BOILERPLATE = [
 ]
 
 
+COLA_PROMOCIONAL = [
+    "boletines el tiempo",
+    "el tiempo google news",
+    "el tiempo app",
+    "suscríbete al digital",
+    "sigue toda la información de",
+    "ya se enteró de las últimas noticias",
+    "alianza estratégica con the new york times",
+    "regístrese en nuestros boletines",
+    "regístrate en nuestros boletines",
+]
+
+
 def limpiar_contenido(texto: str, titulo: str = "") -> str:
-    # 1) Corte estructural: todo lo anterior al título es cabecera del
-    #    sitio (cookies, login, chatbot), no artículo. Si el título
-    #    aparece en el cuerpo, arrancamos desde ahí.
+    # 1) Corte de cabecera: todo lo anterior al título es chrome del sitio.
     if titulo:
         idx = texto.find(titulo)
         if idx > 0:
             texto = texto[idx:]
 
-    # 2) Filtro por marcadores para lo que sobreviva (avisos intercalados)
+    # 2) Corte de cola: desde el primer marcador promocional, nada sirve.
+    texto_low = texto.lower()
+    cortes = [texto_low.find(m) for m in COLA_PROMOCIONAL]
+    cortes = [c for c in cortes if c > 0]
+    if cortes:
+        texto = texto[: min(cortes)]
+
+    # 3) Filtro línea a línea para residuos sueltos.
     lineas = []
     for l in texto.split("\n"):
         ls = l.strip()
-        # Etiquetas sueltas de sección que no son contenido
         if ls.lower() in ("noticia", "aquí", "publicidad"):
             continue
-        # Residuos de reproductores: líneas que son solo dígitos,
-        # dos puntos o barras ("0:00", "/")
         if ls and len(ls) <= 8 and all(c in "0123456789:/ " for c in ls):
             continue
         if any(m in ls.lower() for m in BOILERPLATE):
@@ -244,7 +324,7 @@ def limpiar_contenido(texto: str, titulo: str = "") -> str:
 # ---------------------------------------------------------------------
 def main():
     sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    medios = sb.table("outlets").select("id, slug, nivel_paywall, fuentes").execute().data
+    medios = sb.table("outlets").select("id, slug, nivel_paywall, fuentes, regla_seccion").execute().data
     if not medios:
         sys.exit("No hay medios en la tabla outlets. ¿Corriste las migraciones?")
 
@@ -279,10 +359,10 @@ def main():
 
                     contenido_limpio = limpiar_contenido(art["contenido_visible"], art["titulo"])
                     if len(contenido_limpio) < 100:
-                        # La limpieza dejó casi nada: era puro boilerplate
                         total_errores += 1
                         continue
 
+                    seccion = extraer_seccion(url, medio.get("regla_seccion"))
                     fila = {
                         "outlet_id": medio["id"],
                         "url": url,
@@ -291,8 +371,9 @@ def main():
                         "autor": art["autor"],
                         "fecha_publicacion": art["fecha_publicacion"],
                         "contenido_visible": contenido_limpio,
-                        "es_parcial": detectar_parcial(contenido_limpio, medio["nivel_paywall"]),
+                        "es_parcial": art["paywall_jsonld"] or detectar_parcial(contenido_limpio, medio["nivel_paywall"]),
                         "tipo": clasificar_tipo(url),
+                        "seccion": seccion,
                         "hash_sha256": calcular_hash(art["titulo"], art["subtitulo"], contenido_limpio),
                     }
 
