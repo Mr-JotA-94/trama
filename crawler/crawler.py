@@ -22,6 +22,8 @@ fallando de forma aislada (un medio caído no detiene a los demás).
 """
 
 import hashlib
+import html as html_lib
+import json
 import os
 import re
 import sys
@@ -160,6 +162,39 @@ def obtener_urls_de_fuente(cliente: httpx.Client, fuente: dict) -> list[dict]:
 # Extracción de artículo
 # ---------------------------------------------------------------------
 
+def extraer_articlebody(html: str) -> str | None:
+    """Cuerpo declarado por el medio en el JSON-LD. Recorre todos los bloques
+    ld+json, aplana @graph/arrays, devuelve el primer articleBody no vacío.
+    None si ninguno lo trae (p. ej. notas-video). Nunca levanta."""
+    bloques = re.findall(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html, re.I | re.S,
+    )
+    for bloque in bloques:
+        try:
+            data = json.loads(bloque.strip())
+        except Exception:
+            continue
+        nodos: list = []
+
+        def recoger(obj):
+            if isinstance(obj, dict):
+                if isinstance(obj.get("@graph"), list):
+                    for n in obj["@graph"]:
+                        recoger(n)
+                nodos.append(obj)
+            elif isinstance(obj, list):
+                for n in obj:
+                    recoger(n)
+
+        recoger(data)
+        for nodo in nodos:
+            if isinstance(nodo, dict):
+                cuerpo = nodo.get("articleBody")
+                if isinstance(cuerpo, str) and cuerpo.strip():
+                    return html_lib.unescape(cuerpo).strip()
+    return None
+
 def detectar_paywall_jsonld(html: str) -> bool:
     """Lee isAccessibleForFree del JSON-LD. El medio declara aquí si la nota
     es de pago — señal limpia, no depende de longitud ni de overlays JS."""
@@ -186,7 +221,7 @@ def meta_content(html: str, name: str) -> str | None:
     return None
 
 
-def extraer_articulo(cliente: httpx.Client, url: str) -> dict | None:
+def extraer_articulo(cliente: httpx.Client, url: str, metodo: str = "articlebody") -> dict | None:
     """Descarga y extrae SOLO el contenido visible públicamente."""
     try:
         r = cliente.get(url, timeout=30)
@@ -204,7 +239,15 @@ def extraer_articulo(cliente: httpx.Client, url: str) -> dict | None:
         else:
             campo = lambda k, d=None: getattr(extraido, k, d)
 
-        contenido = (campo("text") or "").strip()
+        contenido_traf = (campo("text") or "").strip()
+
+        # Elección del cuerpo según bucket. articleBody primario, trafilatura
+        # piso. Un articleBody < 100 chars se trata como ausente (cae a traf).
+        if metodo == "articlebody":
+            ab = extraer_articlebody(r.text)
+            contenido = ab if (ab and len(ab) >= 100) else contenido_traf
+        else:
+            contenido = contenido_traf
         titulo = (campo("title") or "").strip()
 
         # Subtítulo: trafilatura usa og:description. Algunos medios (El
@@ -324,7 +367,7 @@ def limpiar_contenido(texto: str, titulo: str = "") -> str:
 # ---------------------------------------------------------------------
 def main():
     sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-    medios = sb.table("outlets").select("id, slug, nivel_paywall, fuentes, regla_seccion").execute().data
+    medios = sb.table("outlets").select("id, slug, nivel_paywall, fuentes, regla_seccion, extraccion").execute().data
     if not medios:
         sys.exit("No hay medios en la tabla outlets. ¿Corriste las migraciones?")
 
@@ -348,10 +391,12 @@ def main():
                     if url in urls_vistas:
                         continue
                     urls_vistas.add(url)
+                    if medio["slug"] == "el-tiempo" and entrada.get("titulo_feed", "").strip().lower().startswith("video |"):
+                        continue  # nota-video de El Tiempo: sin cuerpo de texto archivable
                     if "/caricaturista" in url or "/caricaturas" in url:
                         continue  # contenido visual, no archivable como texto
 
-                    art = extraer_articulo(cliente, url)
+                    art = extraer_articulo(cliente, url, medio.get("extraccion") or "articlebody")
                     time.sleep(PAUSA_ENTRE_ARTICULOS)
                     if art is None:
                         total_errores += 1

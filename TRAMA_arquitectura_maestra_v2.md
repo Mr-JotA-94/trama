@@ -1,0 +1,244 @@
+# TRAMA — Documento Maestro de Arquitectura
+### Rastreador de noticias colombianas: origen, divergencia y técnicas de persuasión
+
+> **Versión 2.0 — 13 junio 2026 — Autor: Jota (con Claudio)**
+> Fuente de verdad del proyecto. Toda sesión empieza aquí + TRASPASO.md + BITACORA.md.
+> v2.0 actualiza: estado real de Fase 1 (completa/desplegada), medios nuevos
+> (RTVC, La Silla Vacía), decisiones de calidad de datos, y hallazgos que cambian
+> el plan (articleBody, grafo de historias relacionadas).
+
+---
+
+## 0. Declaración de Tier (Blueprint de código)
+
+- **Tier actual: 2** (compartible públicamente, mantenedor único, presupuesto $0)
+- **Camino a Tier 3** si gana tracción (usuarios reales, comunidad activa)
+- **Componentes load-bearing (tratamiento defensivo):**
+  1. Pipeline de ingesta (crawler + parser) — si falla, no hay datos
+  2. Log de auditoría con hashes — si se corrompe, muere la propuesta de valor
+  3. Esquema de base de datos — migrar después es doloroso
+- **Componentes pragmáticos:** UI, clasificador de tipo, prompts de IA (iterables)
+
+---
+
+## 1. Qué es TRAMA (una frase)
+
+> Una hemeroteca forense: rastrea cómo una misma noticia se origina, se replica y
+> **muta** entre medios colombianos, y señala las técnicas de persuasión que cada
+> versión usa sobre el lector.
+
+**Usuario primario:** periodistas, verificadores y ciudadanos políticamente
+activos en Colombia. NO el público general — ellos llegan después, amplificados.
+
+**Momento de valor:** "Vi un titular. Entro a Trama. Veo las versiones del mismo
+hecho lado a lado, qué omitió cada medio y qué técnica usó. Decido con evidencia."
+
+**En producción:** trama-co.vercel.app
+
+---
+
+## 2. Stack (todo gratis)
+
+| Capa | Herramienta | Notas |
+|---|---|---|
+| Crawler | Python + httpx + trafilatura | corre en GitHub Actions cada 6h |
+| Base de datos | Supabase (Postgres + pgvector) | región São Paulo |
+| Embeddings | sentence-transformers multilingüe | Fase 2, local, gratis |
+| Análisis IA | Groq + Llama 3.3 | Fase 3, gratis |
+| Frontend | Next.js 14 (App Router) en Vercel | Server Components, solo lectura |
+| Inmutabilidad | hashes SHA-256 + log append-only | Polygon opcional Fase 4 |
+| Jobs | GitHub Actions cron | gratis |
+
+**Decisión clave:** crawler en Actions (no en Vercel), escribe a Supabase con
+clave secreta; web en Vercel solo lee con clave pública. Las tres piezas
+desacopladas: si una cae, las otras siguen. Se comunican solo vía Supabase.
+
+**Claves Supabase (formato nuevo):** sb_secret_ (crawler, ignora RLS) /
+sb_publishable_ (web, solo lectura por RLS). Jamás la secret en el repo.
+
+---
+
+## 3. Esquema de base de datos (load-bearing)
+
+Tablas: `outlets` (medios + config + perfil reservado), `articles` (snapshots
+inmutables con hash), `stories` (clústeres, Fase 2), `story_articles`,
+`analyses` (persuasión, Fase 3), `audit_log`.
+
+Columnas clave de `articles`: titulo, subtitulo, autor, fecha_publicacion,
+fecha_captura, contenido_visible, es_parcial, tipo, **seccion**, hash_sha256,
+entidades (Fase 2), embedding vector(384) (Fase 2).
+
+Config en `outlets`: fuentes (jsonb: rss/sitemap), regla_seccion (jsonb:
+primer_segmento/fijo/ninguno), nivel_paywall, y columnas de perfil reservadas
+(propietario, grupo_economico, etc.) para Fase 3.
+
+**Regla inmutable:** nunca UPDATE sobre contenido_visible ni hash. Artículo que
+cambia = fila nueva (mismo url, hash distinto). Deduplicación por unique(url,hash).
+
+Migraciones aplicadas (en supabase/migrations/):
+1. schema_inicial · 2. rls_lectura_publica · 3. multifeed_y_fuentes ·
+4. limpiar_fuentes_espectador · 5. seccion
+
+---
+
+## 4. Medios
+
+### Estructura central — Fase 1 (5 medios, EN PRODUCCIÓN)
+Balanceada por ángulo editorial, para que el análisis de divergencia no nazca
+sesgado. Las posiciones son hipótesis internas, NO etiquetas del producto.
+
+| Medio | Ángulo | Fuente | Paywall |
+|---|---|---|---|
+| Vorágine | investigativo independiente | RSS | abierto |
+| Las2orillas | digital crítico | RSS | abierto |
+| El Espectador | centro tradicional | sitemap | parcial |
+| El Tiempo | establishment (Sarmiento) | RSS (3 feeds) | parcial |
+| El Colombiano | conservador regional (Medellín) | RSS | parcial |
+
+### Expansión — Fases 2 y 3 (cola, con criterios)
+**Criterios de admisión:** (1) cada medio debe aportar un ángulo que los actuales
+no cubren — "más" sin ángulo nuevo es solo volumen; (2) verificar feed con
+verificar_feeds.py antes de prometerle lugar.
+
+| Medio | Ángulo que agrega | Fase |
+|---|---|---|
+| Colombia+20 | vertical de paz (El Espectador) | 2 |
+| **La Silla Vacía** | análisis político independiente, foco en poder y redes | 2 |
+| Semana | derecha (Grupo Gilinski) — paywall duro, solo titulares/ledes | 3 |
+| Caracol / W Radio | broadcast establishment | 3 |
+| **RTVC Noticias** | **medio público estatal — perspectiva oficial del Estado, ángulo que ningún privado cubre** | 3 |
+
+Nota sobre RTVC: como medio público, su encuadre representa la voz institucional
+del gobierno de turno. Valioso precisamente por contrastar con los privados —
+amplía el espectro hacia un ángulo que hoy falta por completo. Verificar su feed
+antes de integrarlo.
+
+Nota sobre La Silla Vacía: paywall parcial; su fuerte es el análisis de poder y
+relaciones, no la noticia de último minuto. Aporta profundidad analítica al clúster.
+
+---
+
+## 5. Taxonomía de técnicas de persuasión (Fase 3, en español)
+
+El producto dice "técnicas de persuasión detectadas", NO "sesgo cognitivo"
+(el sesgo vive en el lector; la técnica vive en el texto).
+
+Códigos: `encuadre` (palabras cargadas), `omision` (falta un hecho que el clúster
+sí tiene), `miedo` (amenaza desproporcionada), `falsa_dicotomia`,
+`atribucion_difusa` ("expertos dicen" sin fuente), `titular_enganoso`,
+`arrastre` ("todos coinciden").
+
+Salida JSON estricta por artículo: tecnicas[], omisiones[], resumen_neutral.
+Prompt en español, temperatura baja, escéptico, cita evidencia textual o no
+reporta. Calibrar conservador: un falso positivo de "manipulación" cuesta más
+credibilidad que diez falsos negativos.
+
+---
+
+## 6. Clustering (Fase 2 — el corazón intelectual)
+
+Pipeline de dos etapas, **entidades primero, semántica después**:
+1. Clasificar tipo (ya hecho en Fase 1)
+2. Extraer entidades (spaCy es_core_news_md)
+3. Candidatos: artículos de ±72h que compartan ≥3 entidades + misma/compatible sección
+4. Confirmación: similitud coseno de embeddings ≥ umbral (hipótesis 0.62, calibrar)
+5. Zona dudosa → cola de revisión manual
+
+**Reglas:** solo las noticias forman el clúster núcleo; opinión/editorial/análisis
+se adjuntan como "reacciones" (no se comparan contra noticias en omisiones).
+
+**Decisiones pendientes de cerrar con datos reales (al iniciar Fase 2):**
+- Umbral de similitud (0.62 es hipótesis sin calibrar)
+- Ventana temporal (±72h, revisar contra ritmo real de publicación)
+- Clústeres de tamaño 1: ¿son historia o no hasta tener 2+ medios?
+
+### ⭐ Evolución del modelo: grafo de historias relacionadas (idea de Jota)
+Más allá de clústeres aislados: artículos que NO son la misma noticia pero están
+ligados (una nota y su derivada, un hecho y su reacción). Relación ENTRE clústeres,
+no solo dentro. Mejor que el plan original. Implementar DESPUÉS de validar que el
+clustering simple funciona — no en el primer pase.
+
+### Nota sobre expansión de medios y Fase 2
+El clustering opera sobre artículos, no sobre medios. Agregar un medio = config
+nueva en outlets, NO toca el clustering; solo se recalibran umbrales. Por eso:
+validar el clustering con los 5 medios actuales (que Jota conoce y puede juzgar a
+ojo) ANTES de expandir. Menos medios = más capacidad de verificar si el motor sirve.
+
+---
+
+## 7. Sistema de diseño (IMPLEMENTADO en Fase 1)
+
+**Tokens:** tinta `#171A2E` · papel `#FCFBF6` · resaltador `#FFC23D` (técnicas,
+Fase 3) · hilo `#C8442E` (conexión de versiones) · verificado `#2E6E4E` · gris
+archivo `#8C8A82`.
+
+**Tipografía:** Archivo Black (display, fundición argentina — la elección es el
+concepto) · Source Serif 4 (cuerpo) · IBM Plex Mono (hashes, timestamps, forense).
+
+**Tintas por medio:** paleta sobria asignada por Trama (NO colores de marca ni de
+partido). El Tiempo azul, El Espectador verdeazul, Vorágine violeta, Las2orillas
+ocre, El Colombiano marrón. Rojo/ámbar/verde reservados para hilo/resaltador/
+verificado. Etiquetas con relleno sólido + texto papel para contraste.
+
+**Elemento firma:** el hilo rojo — conecta versiones de un mismo hecho ordenadas
+por hora, estilo tablero de investigación. Hoy es decorativo (lista cronológica);
+hará su verdadero trabajo en Fase 2 con el clustering. Única animación del sitio,
+respeta prefers-reduced-motion.
+
+**Reglas:** esquinas rectas (papel no tiene border-radius), bordes 1px, sin
+gradientes/sombras/glassmorphism.
+
+---
+
+## 8. Fases de construcción
+
+### ✅ FASE 1 — El archivo funciona (COMPLETA Y DESPLEGADA)
+Crawler de 5 medios + snapshots con hash + clasificador de tipo + sección + web
+pública de solo lectura (registro, expediente, perfil de medio). En observación
+de 7 días (criterio: ≥150 artículos, 5 medios, cero duplicados, tipos ≥80%).
+
+### ⏳ ANTES DE FASE 2 
+### Extracción de cuerpo por bucket (desde 2026-06-14)
+El cuerpo del artículo se extrae según el campo outlets.extraccion:
+- **'articlebody':** se prefiere el campo articleBody del JSON-LD (lo que el medio
+  declara), con trafilatura de respaldo si una nota no lo expone. Medios: El Tiempo,
+  El Colombiano, El Espectador. Motivo: cuerpos sin boilerplate (cookies, audio IA,
+  cola de boletines) como materia prima limpia para el clustering.
+- **'trafilatura':** solo trafilatura. Medios: Vorágine (no expone JSON-LD),
+  Las2orillas (no expone articleBody). Trafilatura ya los extrae limpio.
+Título, subtítulo, autor y fecha SIEMPRE salen de trafilatura/meta; articleBody
+aporta solo el cuerpo. Trafilatura sigue siendo el piso: articleBody que falte o
+falle cae a trafilatura (degradación elegante). Al agregar un medio nuevo:
+diagnosticar su articleBody y fijar el bucket explícito antes de admitirlo.
+
+### FASE 2 — Las historias se conectan
+Entidades + embeddings + clustering + vista del hilo rojo. Integrar Colombia+20 y
+La Silla Vacía DESPUÉS de validar el clustering con los 5 actuales.
+
+### FASE 3 — El análisis de persuasión
+Pipeline Groq por clúster (≥3 medios), resaltador ámbar, resumen neutral, perfiles
+de medios (sobre columnas ya reservadas; cada dato con fuente citable). Integrar
+Semana, Caracol/W Radio, RTVC.
+
+### FASE 4 — Comunidad e inmutabilidad fuerte
+Auth, anotaciones (voto a la anotación, no al medio), reputación de anotadores,
+gobernanza mínima contra captura coordinada, anclaje opcional en Polygon.
+
+---
+
+## 9. Riesgos vigentes
+
+1. **Scope creep** — ideas nuevas van a BITACORA.md (sección Ideas), no al código.
+2. **Falsos positivos del análisis** (Fase 3) — calibrar conservador.
+3. **Comunidad como vector de sesgo** (Fase 4) — gobernanza, no antes.
+4. **Legal** — jamás saltar paywalls; solo contenido público; citas cortas con
+   enlace al original.
+5. **Arranque en frío** — la Fase 1 es útil sin un solo usuario. Esa es la defensa.
+6. **Calidad de extracción por medio** — trafilatura sirve de base general, pero
+   algunos medios necesitan extractor a medida (ver deuda El Tiempo / articleBody).
+   Es la naturaleza del scraping, no un fallo de diseño.
+
+---
+
+*Siguiente sesión: en el Proyecto Trama, con TRASPASO.md cargado. Primer movimiento
+recomendado: diagnóstico de articleBody en los 5 medios, luego Fase 2.*
