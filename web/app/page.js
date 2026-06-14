@@ -30,7 +30,7 @@ function horaCO(ts) {
 export default async function Registro() {
   const { data: articulos, error } = await supabase
     .from("articles")
-    .select("id, titulo, tipo, es_parcial, fecha_captura, hash_sha256, outlets(nombre, slug)")
+    .select("id, titulo, tipo, seccion, es_parcial, fecha_captura, hash_sha256, outlets(nombre, slug)")
     .order("fecha_captura", { ascending: false })
     .limit(80);
 
@@ -58,6 +58,7 @@ export default async function Registro() {
                 {a.tipo !== "noticia" && (
                   <span className={`tag ${a.tipo === "opinion" ? "tag-opinion" : ""}`}>{a.tipo}</span>
                 )}
+                {a.seccion && <span className="tag tag-seccion">{a.seccion}</span>}
                 {a.es_parcial && <span className="tag tag-parcial">captura parcial</span>}
                 <span title="SHA-256 de la captura">{a.hash_sha256.slice(0, 12)}…</span>
               </div>

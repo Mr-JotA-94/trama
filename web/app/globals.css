@@ -147,6 +147,12 @@ a { color: inherit; }
 .tag-opinion   { background: var(--tinta); color: var(--papel); }
 .tag-parcial   { border-color: transparent; background: var(--resaltador); color: var(--tinta); }
 
+/* Sección: metadato de navegación, el de menor jerarquía de la fila.
+   Etiqueta fantasma —sin relleno, solo contorno y texto en gris-archivo,
+   el mismo gris de timestamps y hashes—. No compite con medio (color),
+   parcial (ámbar) ni opinion (tinta sólida): contexto, no alerta. */
+.tag-seccion   { border-color: var(--gris-archivo); color: var(--gris-archivo); }
+
 /* ---- Página de artículo --------------------------------------------- */
 .expediente {
   border: var(--linea);

@@ -35,6 +35,8 @@ export default async function Articulo({ params }) {
         <dd><Link href={`/medio/${a.outlets.slug}`}>{a.outlets.nombre}</Link></dd>
         <dt>tipo</dt>
         <dd>{a.tipo}</dd>
+        <dt>sección</dt>
+        <dd>{a.seccion || "no declarada"}</dd>
         <dt>autoría</dt>
         <dd>{a.autor || "no declarada"}</dd>
         <dt>publicado</dt>
