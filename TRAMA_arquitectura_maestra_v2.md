@@ -151,6 +151,17 @@ se adjuntan como "reacciones" (no se comparan contra noticias en omisiones).
 - Umbral de similitud (0.62 es hipótesis sin calibrar)
 - Ventana temporal (±72h, revisar contra ritmo real de publicación)
 - Clústeres de tamaño 1: ¿son historia o no hasta tener 2+ medios?
+**Scores requeridos por el algoritmo para la UI (contrato backend→frontend):**
+Cada artículo dentro de un clúster necesita tres scores calculados por el pipeline:
+1. `score_neutralidad` — distancia al centroide del clúster en el espacio de
+   embeddings (mayor distancia = más sesgado; menor = más neutral/central).
+2. `score_cobertura` — proporción de entidades del clúster que el artículo
+   menciona (qué tan completo es factualmente).
+3. `score_divergencia` — distancia máxima al artículo más similar del clúster
+   (qué tan distinto es del consenso).
+Las dos cards ancla son las de mayor (score_neutralidad×score_cobertura) y
+mayor score_divergencia. Estos scores se guardan en `story_articles` como
+columnas adicionales en la migración de Fase 2.
 
 ### ⭐ Evolución del modelo: grafo de historias relacionadas (idea de Jota)
 Más allá de clústeres aislados: artículos que NO son la misma noticia pero están
@@ -187,6 +198,17 @@ respeta prefers-reduced-motion.
 
 **Reglas:** esquinas rectas (papel no tiene border-radius), bordes 1px, sin
 gradientes/sombras/glassmorphism.
+
+**Vista de clúster — Fase 2 (diseño cerrado 2026-06-15):**
+Layout bento editorial: 2 cards ancla (borde izq 3px color-medio, criterio:
+neutralidad+cobertura+divergencia) + N cards secundarias (borde 1px). Hilo
+cronológico con ediciones tachadas, popup de historial por nodo, y extensión
+hacia historia relacionada con nodo hueco + segmento discontinuo. Hilo
+implementado como SVG path curvo (Bézier), no línea recta — pendiente precisar
+en implementación. Grafo panorámico expandible con líneas SVG dinámicas.
+Barra de búsqueda con filtros: sección, tipo, medio, fecha. Análisis de
+persuasión: acordeón por card (Fase 3). Resumen del hecho: bloque prominente,
+placeholder Fase 2, LLM en Fase 3.
 
 ---
 
