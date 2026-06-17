@@ -26,6 +26,10 @@ export default function RootLayout({ children }) {
           <div className="masthead-inner">
             <Link href="/" className="brand">TRAMA</Link>
             <p className="tagline">Hemeroteca forense · medios colombianos</p>
+            <nav className="masthead-nav">
+              <Link href="/" className="nav-link">Registro</Link>
+              <Link href="/historias" className="nav-link">Historias</Link>
+            </nav>
           </div>
           {/* El hilo: la línea roja de investigación que recorre el sitio */}
           <div className="hilo" aria-hidden="true" />
