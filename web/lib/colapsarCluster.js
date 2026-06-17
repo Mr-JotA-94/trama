@@ -10,6 +10,7 @@
 
 /**
  * @typedef {{
+ *   article_id: string,
  *   url: string, medio_slug: string, medio_nombre: string,
  *   hash_sha256: string, fecha_captura: string,
  *   titulo: string, subtitulo: string|null, es_parcial: boolean,
@@ -47,6 +48,7 @@ export function colapsarCluster(capturas) {
 
     articulos.push({
       url,
+      article_id:            ultima.article_id,
       medio_slug:            ultima.medio_slug,
       medio_nombre:          ultima.medio_nombre,
       titulo:                ultima.titulo,

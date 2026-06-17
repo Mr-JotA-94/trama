@@ -50,7 +50,9 @@ function CardAncla({ articulo: a, label }) {
         {label && <span className="ancla-label">{label}</span>}
       </div>
 
-      <h3 className="card-titulo">{a.titulo}</h3>
+      <h3 className="card-titulo">
+        <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
+      </h3>
       {a.subtitulo && <p className="card-sub">{a.subtitulo}</p>}
 
       <dl className="card-scores">
@@ -90,11 +92,17 @@ function CardSecundaria({ articulo: a }) {
         {a.es_parcial && <span className="tag tag-parcial">captura parcial</span>}
       </div>
       <h3 className="card-titulo card-titulo-sm">
-        <a href={a.url} target="_blank" rel="noopener noreferrer">
-          {a.titulo}
-        </a>
+        <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
       </h3>
-      <p className="card-hora">{horaCO(a.fecha_primera_captura)}</p>
+      <div className="card-footer-sm">
+        <p className="card-hora">{horaCO(a.fecha_primera_captura)}</p>
+        <a
+          href={a.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="enlace-original"
+        >Leer original ↗</a>
+      </div>
     </article>
   );
 }
@@ -122,6 +130,7 @@ export default async function Historia({ params }) {
 
   // Aplanar filas anidadas al shape que espera colapsarCluster
   const capturas = (story.story_articles ?? []).map((sa) => ({
+    article_id:        sa.articles.id,
     url:               sa.articles.url,
     medio_slug:        sa.articles.outlets.slug,
     medio_nombre:      sa.articles.outlets.nombre,
@@ -217,10 +226,10 @@ export default async function Historia({ params }) {
                   <>
                     <span className="hilo-titulo-tachado">{a.titulo_original}</span>
                     {" "}
-                    <span>{a.titulo}</span>
+                    <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
                   </>
                 ) : (
-                  <span>{a.titulo}</span>
+                  <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
                 )}
               </div>
 
@@ -235,7 +244,9 @@ export default async function Historia({ params }) {
                     {a.capturas.map((c, i) => (
                       <li key={c.hash_sha256}>
                         <span className="hilo-hora">{horaCO(c.fecha_captura)}</span>
-                        <span className="hilo-hash">{c.hash_sha256.slice(0, 12)}…</span>
+                        <Link href={`/articulo/${c.article_id}`} className="hilo-hash">
+                          {c.hash_sha256.slice(0, 12)}…
+                        </Link>
                         {i > 0 && c.titulo !== a.capturas[i - 1].titulo && (
                           <span className="hilo-cambio-label"> · título cambiado</span>
                         )}

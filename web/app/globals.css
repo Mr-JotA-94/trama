@@ -549,9 +549,165 @@ a { color: inherit; }
   margin-top: 6px;
 }
 
+.card-footer-sm {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+}
+.card-footer-sm .card-hora { margin-top: 0; }
+
+.enlace-icono {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.9rem;
+  text-decoration: none;
+  color: var(--gris-archivo);
+}
+.enlace-icono:hover { color: var(--tinta); }
+
 .gris-archivo { color: var(--gris-archivo); font-size: 0.88rem; }
+
+/* ---- Componente Buscador ------------------------------------------- */
+.buscador { margin: 20px 0 28px; display: flex; flex-direction: column; gap: 20px; }
+
+.buscador-form { display: flex; flex-direction: column; gap: 8px; }
+
+.buscador-label {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--gris-archivo);
+}
+
+.buscador-fila { display: flex; gap: 0; }
+
+.buscador-input {
+  flex: 1;
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.95rem;
+  padding: 9px 12px;
+  border: var(--linea);
+  background: var(--papel);
+  color: var(--tinta);
+  outline: none;
+  min-width: 0;
+}
+.buscador-input:focus { outline: 3px solid var(--hilo); outline-offset: -1px; }
+.buscador-input::placeholder { color: var(--gris-archivo); }
+
+.buscador-btn {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 9px 18px;
+  border: var(--linea);
+  border-left: none;
+  background: var(--tinta);
+  color: var(--papel);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.buscador-btn:hover { background: var(--hilo); border-color: var(--hilo); }
+
+/* Barra de filtros: row compacto bajo el campo de búsqueda */
+.buscador-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  padding-top: 6px;
+  border-top: 1px dotted var(--gris-archivo);
+}
+
+/* Cada filtro: label pequeño encima, control abajo */
+.buscador-filtro {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.buscador-filtro-label {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--gris-archivo);
+}
+
+.buscador-select {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.82rem;
+  padding: 5px 8px;
+  border: var(--linea);
+  background: var(--papel);
+  color: var(--tinta);
+  cursor: pointer;
+  /* Evitar border-radius del browser en algunos sistemas */
+  border-radius: 0;
+  appearance: auto;
+}
+.buscador-select:focus { outline: 3px solid var(--hilo); outline-offset: -1px; }
+
+.buscador-input-corto {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.82rem;
+  padding: 5px 8px;
+  border: var(--linea);
+  background: var(--papel);
+  color: var(--tinta);
+  width: 110px;
+  outline: none;
+}
+.buscador-input-corto:focus { outline: 3px solid var(--hilo); outline-offset: -1px; }
+.buscador-input-corto::placeholder { color: var(--gris-archivo); }
+
+.buscador-input-fecha {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.82rem;
+  padding: 5px 8px;
+  border: var(--linea);
+  background: var(--papel);
+  color: var(--tinta);
+  width: 136px;
+  outline: none;
+}
+.buscador-input-fecha:focus { outline: 3px solid var(--hilo); outline-offset: -1px; }
+
+/* ---- Página /buscar ------------------------------------------------ */
+.buscar-aviso {
+  background: var(--resaltador);
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.88rem;
+  padding: 10px 14px;
+  margin: 16px 0;
+}
+
+.buscar-resultado { margin: 24px 0; }
+
+.buscar-resultado-titulo {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+.buscar-resultado-sub {
+  font-size: 0.88rem;
+  color: var(--gris-archivo);
+  line-height: 1.55;
+  margin-bottom: 16px;
+  max-width: 600px;
+}
 
 @media (max-width: 560px) {
   .bento-secundarias { grid-template-columns: 1fr; }
-  .masthead-nav { display: none; } /* móvil: nav se oculta; mejora futura */
+  .masthead-nav { display: none; }
+  .buscador-fila { flex-direction: column; }
+  .buscador-btn { border-left: var(--linea); border-top: none; }
+  .buscador-filtros { flex-direction: column; align-items: stretch; }
+  .buscador-select,
+  .buscador-input-corto,
+  .buscador-input-fecha { width: 100%; }
 }
