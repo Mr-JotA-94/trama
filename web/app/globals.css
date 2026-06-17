@@ -222,3 +222,336 @@ a { color: inherit; }
   .expediente { grid-template-columns: 1fr; }
   .articulo-titulo { font-size: 1.45rem; }
 }
+
+/* ---- Navegación del masthead --------------------------------------- */
+.masthead-nav {
+  margin-left: auto;
+  display: flex;
+  gap: 20px;
+  align-items: baseline;
+}
+.nav-link {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  text-decoration: none;
+  color: var(--gris-archivo);
+}
+.nav-link:hover { color: var(--tinta); text-decoration: underline; text-decoration-color: var(--hilo); }
+
+/* ---- Breadcrumb ---------------------------------------------------- */
+.breadcrumb {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--gris-archivo);
+  margin-bottom: 16px;
+}
+.breadcrumb a { text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; text-decoration-color: var(--hilo); }
+
+/* ---- Feed de historias --------------------------------------------- */
+.historias-lista { margin-top: 16px; }
+
+.historia-item {
+  border-left: 3px solid var(--hilo);
+  padding: 12px 0 12px 16px;
+  margin-left: 4px;
+}
+.historia-item + .historia-item { border-top: 1px dotted var(--gris-archivo); }
+
+.historia-meta {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.74rem;
+  color: var(--gris-archivo);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.historia-fecha { color: var(--gris-archivo); }
+
+.historia-titulo {
+  font-size: 1.12rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.historia-titulo a { text-decoration: none; }
+.historia-titulo a:hover { text-decoration: underline; text-decoration-color: var(--hilo); }
+
+/* ---- Vista de historia (expediente de clúster) --------------------- */
+.historia-header { margin-bottom: 22px; }
+.historia-header-meta {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.78rem;
+  color: var(--gris-archivo);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.historia-seccion { margin-top: 36px; }
+
+.seccion-titulo {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--gris-archivo);
+  margin-bottom: 14px;
+  padding-bottom: 6px;
+  border-bottom: var(--linea);
+}
+
+/* ---- Placeholders honestos de fase --------------------------------- */
+.placeholder-fase {
+  border: 1px dashed var(--gris-archivo);
+  padding: 14px 16px;
+  margin: 16px 0;
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.85rem;
+  color: var(--gris-archivo);
+}
+.placeholder-fase-label {
+  display: block;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 6px;
+}
+.placeholder-fase-texto { line-height: 1.5; }
+.placeholder-fase code {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.88em;
+}
+
+/* ---- Aviso de deuda de ancla (amber, visible) ---------------------- */
+.ancla-deuda-aviso {
+  background: var(--resaltador);
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.ancla-deuda-aviso code {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.88em;
+}
+.ancla-deuda-ref {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.88em;
+  opacity: 0.7;
+}
+
+/* ---- Hilo cronológico (CSS; SVG Bézier como refinamiento futuro) --- */
+.hilo-cronologico {
+  list-style: none;
+  padding-left: 28px;
+  border-left: 2px solid var(--tinta);
+  margin: 0;
+}
+
+.hilo-nodo {
+  position: relative;
+  padding: 10px 0 10px 8px;
+}
+/* Clavo del tablero: círculo. La excepción al "sin border-radius"
+   del sistema de diseño — el nodo representa una tachuela, no papel. */
+.hilo-nodo::before {
+  content: "";
+  position: absolute;
+  left: -35px;
+  top: 14px;
+  width: 10px;
+  height: 10px;
+  background: var(--papel);
+  border: 2px solid var(--tinta);
+  border-radius: 50%;
+}
+
+.hilo-nodo-meta {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.74rem;
+  color: var(--gris-archivo);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.hilo-hora { color: var(--gris-archivo); }
+.hilo-hora-tachada {
+  text-decoration: line-through;
+  opacity: 0.45;
+}
+.hilo-hora-nueva { color: var(--hilo); font-weight: 500; }
+
+.hilo-nodo-titulo { font-size: 0.95rem; line-height: 1.4; }
+.hilo-titulo-tachado { text-decoration: line-through; opacity: 0.45; }
+
+.tag-editada { background: var(--hilo); border-color: var(--hilo); color: var(--papel); }
+
+.hilo-historial {
+  margin-top: 6px;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+}
+.hilo-historial summary {
+  cursor: pointer;
+  color: var(--gris-archivo);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  list-style: none;
+}
+.hilo-historial summary::-webkit-details-marker { display: none; }
+.hilo-historial-lista {
+  list-style: none;
+  padding: 6px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hilo-historial-lista li { display: flex; gap: 10px; color: var(--gris-archivo); }
+.hilo-hash { color: var(--gris-archivo); opacity: 0.7; }
+.hilo-cambio-label { color: var(--hilo); }
+
+/* Nodo placeholder: historia relacionada */
+.hilo-nodo-relacionada::before {
+  border-style: dashed;
+  background: transparent;
+}
+.hilo-nodo-rel-puntos {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.8rem;
+  color: var(--gris-archivo);
+  letter-spacing: 4px;
+  display: block;
+  margin-bottom: 4px;
+}
+.hilo-nodo-rel-label {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.78rem;
+  color: var(--gris-archivo);
+  font-style: italic;
+}
+.hilo-nodo-rel-label code {
+  font-family: var(--f-mono), monospace;
+  font-style: normal;
+  font-size: 0.88em;
+}
+
+/* ---- Bento editorial ----------------------------------------------- */
+.bento-anclas {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.card-ancla {
+  border-left: 3px solid var(--c-medio, var(--tinta));
+  border-top: var(--linea);
+  border-right: var(--linea);
+  border-bottom: var(--linea);
+  padding: 16px 18px;
+}
+
+.card-secundaria {
+  border: var(--linea);
+  padding: 12px 14px;
+}
+
+.bento-secundarias {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.card-header-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.ancla-label {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--gris-archivo);
+  border: 1px solid var(--gris-archivo);
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.card-titulo {
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin-bottom: 6px;
+}
+.card-titulo a { text-decoration: none; }
+.card-titulo a:hover { text-decoration: underline; text-decoration-color: var(--hilo); }
+.card-titulo-sm { font-size: 0.9rem; }
+
+.card-sub {
+  font-size: 0.88rem;
+  color: var(--gris-archivo);
+  margin-bottom: 12px;
+  line-height: 1.45;
+}
+
+.card-scores {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  color: var(--gris-archivo);
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  row-gap: 3px;
+  column-gap: 8px;
+  margin: 10px 0;
+}
+.card-scores dt { color: var(--gris-archivo); }
+.card-scores dd { color: var(--tinta); }
+
+.card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dotted var(--gris-archivo);
+}
+
+.card-hora {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  color: var(--gris-archivo);
+  margin-top: 6px;
+}
+
+.gris-archivo { color: var(--gris-archivo); font-size: 0.88rem; }
+
+@media (max-width: 560px) {
+  .bento-secundarias { grid-template-columns: 1fr; }
+  .masthead-nav { display: none; } /* móvil: nav se oculta; mejora futura */
+}

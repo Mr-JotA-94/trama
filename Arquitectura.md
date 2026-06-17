@@ -77,7 +77,11 @@ cambia = fila nueva (mismo url, hash distinto). Deduplicación por unique(url,ha
 
 Migraciones aplicadas (en supabase/migrations/):
 1. schema_inicial · 2. rls_lectura_publica · 3. multifeed_y_fuentes ·
-4. limpiar_fuentes_espectador · 5. seccion
+4. limpiar_fuentes_espectador · 5. seccion · 6. extraccion_por_medio ·
+7. fase2_clustering (agrega entidades jsonb + embedding vector(384) a articles;
+   su create de stories/story_articles quedó inerte por IF NOT EXISTS — ver
+   BITACORA) · 8. corregir_esquema_stories (recrea stories/story_articles con
+   esquema correcto, uuid, scores y anclas).
 
 ---
 
@@ -139,42 +143,84 @@ credibilidad que diez falsos negativos.
 
 Pipeline de dos etapas, **entidades primero, semántica después**:
 1. Clasificar tipo (ya hecho en Fase 1)
-2. Extraer entidades (spaCy es_core_news_md)
-3. Candidatos: artículos de ±72h que compartan ≥3 entidades + misma/compatible sección
-4. Confirmación: similitud coseno de embeddings ≥ umbral (hipótesis 0.62, calibrar)
-5. Zona dudosa → cola de revisión manual
+2. Extraer entidades (spaCy es_core_news_md) + embeddings
+   (sentence-transformers paraphrase-multilingual-MiniLM-L12-v2, 384 dims)
+3. Candidatos: pares de medios distintos dentro de ±72h (filtro grueso)
+4. Confirmación: **DOS COMPUERTAS EN AND** (validadas con datos reales 2026-06-16,
+   reemplazan la hipótesis original de "≥3 entidades + coseno ≥0.62"):
+   - **Compuerta 1 (entidades):** peso IDF de entidades compartidas ≥ 20. El peso
+     pondera cada entidad por rareza (log(N/df)); entidades genéricas como "Petro"
+     o "Bogotá" pesan poco, específicas como "golfo de Urabá" pesan mucho.
+   - **Compuerta 2 (semántica):** similitud coseno de embeddings ≥ 0.70.
+   Un par entra al clúster solo si pasa AMBAS. Razón medida: ni el conteo de
+   entidades ni la similitud solos separan "mismo hecho" de "mismo tema" (la
+   campaña electoral comparte muchas entidades Y similitud media). Las dos juntas
+   sí: "mismo hecho" tiene peso alto Y coseno alto; "mismo tema, distinto hecho"
+   tiene uno alto y el otro bajo, y cae.
+5. Agrupación por componentes conexas (union-find). Transitividad intencional:
+   si A~B y B~C, los tres forman una historia aunque A y C no se compararan alto.
 
 **Reglas:** solo las noticias forman el clúster núcleo; opinión/editorial/análisis
-se adjuntan como "reacciones" (no se comparan contra noticias en omisiones).
+se adjuntan como "reacciones" (no se comparan contra noticias en omisiones). Solo
+clústeres de 2+ artículos y 2+ medios distintos (un solo medio no es cobertura
+cruzada).
 
-**Decisiones pendientes de cerrar con datos reales (al iniciar Fase 2):**
-- Umbral de similitud (0.62 es hipótesis sin calibrar)
-- Ventana temporal (±72h, revisar contra ritmo real de publicación)
-- Clústeres de tamaño 1: ¿son historia o no hasta tener 2+ medios?
+**Estado (2026-06-16): motor construido y VALIDADO.** Corrió sobre 587 artículos
+(2.5 días) → 20 clústeres, todos limpios a ojo. Los grandes (18 = captura alias
+Chalá; 13 = muerte Niño Guerrero) son un solo hecho cada uno; la campaña electoral
+quedó correctamente fragmentada en clústeres distintos, no desbordada. Los umbrales
+SIGUEN siendo provisionales en el sentido de que la muestra estuvo dominada por un
+macro-tema (elección); re-verificar la frontera cuando haya semanas de volumen y
+varios temas grandes simultáneos. La METODOLOGÍA (dos compuertas en AND) es lo
+robusto; los números exactos se recalibran corriendo de nuevo los scripts de
+diagnóstico de pares.
+
+**Decisiones cerradas con datos (2026-06-16):**
+- Umbrales: peso IDF ≥20 AND coseno ≥0.70 (antes: hipótesis 0.62 sin calibrar).
+- Ventana temporal ±72h: se mantiene como filtro grueso de candidatos. La regla
+  temporal estricta que se consideró resultó INNECESARIA — las dos compuertas ya
+  separan hecho de tema sin ayuda del tiempo.
+- Regla de "sección compatible": no se implementó; las dos compuertas bastaron.
+  Queda como parámetro opcional si una recalibración futura la necesita.
+
+**Decisiones aún abiertas (Fase 2):**
+- Clústeres de tamaño 1: 505 de 587 noticias quedaron sin clúster (hechos de un
+  solo medio). ¿Son historia o no hasta tener 2+ medios? Sin decidir.
+- Zona dudosa → cola de revisión manual: no implementada aún (las compuertas
+  dieron corte limpio en la muestra; reevaluar si aparece zona gris con volumen).
+
 **Scores requeridos por el algoritmo para la UI (contrato backend→frontend):**
 Cada artículo dentro de un clúster necesita tres scores calculados por el pipeline:
-1. `score_neutralidad` — distancia al centroide del clúster en el espacio de
-   embeddings (mayor distancia = más sesgado; menor = más neutral/central).
+1. `score_neutralidad` — cercanía al centroide del clúster en el espacio de
+   embeddings (mayor = más central/neutral; menor = más sesgado).
 2. `score_cobertura` — proporción de entidades del clúster que el artículo
-   menciona (qué tan completo es factualmente).
-3. `score_divergencia` — distancia máxima al artículo más similar del clúster
-   (qué tan distinto es del consenso).
-Las dos cards ancla son las de mayor (score_neutralidad×score_cobertura) y
-mayor score_divergencia. Estos scores se guardan en `story_articles` como
-columnas adicionales en la migración de Fase 2.
+   menciona (qué tan completo es factualmente). NOTA: hoy no es comparable entre
+   clústeres de distinto tamaño — ver deuda en BITACORA.
+3. `score_divergencia` — distancia al artículo más similar del clúster (qué tan
+   distinto es del consenso).
+Las dos cards ancla son: la de mayor (score_neutralidad×score_cobertura) y la de
+mayor score_divergencia. Estos scores se guardan en `story_articles` (migración
+000008).
 
 ### ⭐ Evolución del modelo: grafo de historias relacionadas (idea de Jota)
 Más allá de clústeres aislados: artículos que NO son la misma noticia pero están
 ligados (una nota y su derivada, un hecho y su reacción). Relación ENTRE clústeres,
 no solo dentro. Mejor que el plan original. Implementar DESPUÉS de validar que el
-clustering simple funciona — no en el primer pase.
+clustering simple funciona (HECHO 2026-06-16) — pero requiere tabla story_relations
+(no existe aún) y criterio de relacionamiento. El criterio será el mismo mecanismo
+de dos compuertas un nivel arriba (entidades IDF + coseno entre centroides de
+clúster), PERO con corte de similitud MEDIA, no alta: suficiente para ligar, no
+tanta como para fusionar. Los pares "mismo tema, distinto hecho" que el clustering
+rechaza (zona electoral, coseno 0.43–0.76) son precisamente las aristas candidatas
+del grafo. Números pendientes de medir SOBRE clústeres reales, no antes.
 
 ### Nota sobre expansión de medios y Fase 2
 El clustering opera sobre artículos, no sobre medios. Agregar un medio = config
 nueva en outlets, NO toca el clustering; solo se recalibran umbrales. Por eso:
 validar el clustering con los 5 medios actuales (que Jota conoce y puede juzgar a
-ojo) ANTES de expandir. Menos medios = más capacidad de verificar si el motor sirve.
-
+ojo) ANTES de expandir (HECHO 2026-06-16). Menos medios = más capacidad de
+verificar si el motor sirve. Feeds de cola ya verificados (La Silla Vacía, RTVC)
+en BITACORA; activarlos solo tras decidir construir sobre 7 medios.
 ---
 
 ## 7. Sistema de diseño (IMPLEMENTADO en Fase 1)

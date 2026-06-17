@@ -14,6 +14,16 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.
 
+- **2026-06-16** — backfill de Fase 2 (NO es truncate ni borrado de archivo).
+  Se poblaron las columnas nuevas entidades (jsonb) y embedding (vector 384) de
+  los 587 artículos vía UPDATE. Es UPDATE sobre articles PERO solo de campos de
+  procesamiento nuevos que estaban NULL; NO se tocó contenido_visible ni hash.
+  La inmutabilidad del snapshot se respeta: añadir un campo derivado no altera
+  el archivo, igual que un índice no altera los datos.
+- **2026-06-16** — stories/story_articles se borran y reconstruyen en cada corrida
+  del clustering (recalcular-todo). Esto NO viola la regla de Fase 2 de no-truncar:
+  los clústeres son CÁLCULO DERIVADO reconstruible desde articles, no son archivo.
+  articles (la fuente de verdad) jamás se toca.
 - **2026-06-14** — cambio de extractor v1→v2 (NO es truncate). Se migró la
   extracción de cuerpo a esquema por bucket (columna outlets.extraccion, migración
   000006): 'articlebody' (El Tiempo, El Colombiano, El Espectador) con trafilatura
@@ -38,6 +48,59 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Deuda técnica conocida
+### es_parcial en El Espectador — investigado, NO es bug (2026-06-16)
+- **Reporte:** notas de El Espectador (y algunas de El Tiempo) marcadas
+  es_parcial=true viéndose completas y largas. Sospecha de falso positivo.
+- **Hipótesis descartadas con datos:** (1) umbral de caracteres — es_parcial no
+  mira longitud; (2) regex global de detectar_paywall_jsonld agarrando un nodo
+  JSON-LD ajeno — el diagnóstico mostró que el nodo PRINCIPAL (mismo titular/URL)
+  declara isAccessibleForFree=false; (3) enlace "Lea más:" incrustado como causa —
+  una nota sin ningún "Lea más:" salió parcial igual.
+- **Medido (% es_parcial por medio):** El Espectador 48.1% (115/239), El Tiempo
+  15.6% (28/180), El Colombiano 1.1%, Las2orillas 0%, Vorágine 0%. El 48% (ni ~0%
+  ni ~90%) indica que El Espectador distingue activamente abiertas vs restringidas:
+  señal real, no ruido.
+- **Conclusión:** el crawler lee correctamente isAccessibleForFree del nodo correcto.
+  No hay bug. Confirma lo ya documentado en Ideas/"Paywall por isAccessibleForFree":
+  El Espectador declara false aunque el cuerpo completo viaje en el HTML público
+  (muro = overlay JS). es_parcial=true NO implica cuerpo recortado en este medio.
+- **Doble semántica a recordar para Fase 2:** es_parcial funde "el medio declara
+  la nota restringida" (detectar_paywall_jsonld) y "el cuerpo archivado está
+  recortado" (detectar_parcial por marcador). NO usarlo como proxy de "incompleto"
+  en el clustering — descartaría ~115 notas de El Espectador que están enteras.
+- **Decisión:** NO tocar el crawler. El uso del flag es visual (badge "de pago"),
+  para el que sirve tal cual.
+### score_cobertura no comparable entre clústeres de distinto tamaño (2026-06-16)
+- **Síntoma (medido sobre clústeres reales):** la cobertura (fracción de entidades
+  del clúster que un artículo menciona) sale baja y plana en clústeres grandes
+  (0.05–0.22 en el de 18 notas) y alta en chicos (0.5–0.8 en los de 2). Causa: en
+  clústeres grandes la unión de entidades es enorme, así ninguna nota cubre gran
+  parte. Matemáticamente correcto, pero el score no discrimina bien "cuál es la
+  más completa" en clústeres grandes.
+- **Decisión:** NO arreglar ahora. Para Fase 2 temprana el criterio de ancla
+  funciona (verificado: las anclas elegidas tienen sentido). Es deuda de robustez,
+  no de corrección.
+- **Reactivar SI:** al construir la vista, el ancla por cobertura elige mal de
+  forma visible, o se quiere comparar cobertura entre historias distintas.
+- **Fix candidato:** normalizar cobertura por tamaño del clúster, o medirla solo
+  contra las entidades de las anclas en vez de la unión total.
+
+### Esquema vivo manda — verificar antes de escribir código (2026-06-16)
+- **Qué pasó:** el clustering encadenó 4 errores de insert porque su código
+  asumía el esquema de la migración 000007 dictada en chat, pero la base tenía
+  un esquema distinto de stories/story_articles (boceto previo: titulo_descriptivo,
+  articulo_origen_id, estado, todo uuid).
+- **Causa raíz doble:** (1) se escribió el código sin leer el esquema real de la
+  base primero; (2) la 000007 usó `create table IF NOT EXISTS`, que sobre tablas
+  preexistentes NO hizo nada y NO avisó — fallo silencioso. El alter de articles
+  sí corrió (por eso entidades/embedding quedaron bien).
+- **Lección:** antes de escribir código que dependa del esquema, leer
+  information_schema de la base, no confiar en el .sql dictado. Y en componentes
+  load-bearing, evitar defensas que fallan en silencio (IF NOT EXISTS, try/except
+  mudos): preferir el error ruidoso que delata el desajuste.
+- **Fix:** migración 000008_corregir_esquema_stories (drop+create con uuid
+  consistente con articles.id). 000007 se deja en disco como historia, con
+  comentario que apunta a 000008 (migraciones son append-only, no se reescriben).
 
 ### articleBody plano y con enlaces incrustados (2026-06-14)
 - **Síntoma 1 (formato):** articleBody del JSON-LD viene como string plano, sin
@@ -112,6 +175,36 @@ cambios de esquema se hacen con migraciones que preservan datos.
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
+### Política de archivado de bitácora (acordada 2026-06-16)
+- BITACORA es append-only y NO se condensa (condensar pierde el "por qué"
+  original, que es justo lo que la bitácora preserva). Cuando una entrada se
+  resuelve, se le antepone marcador `[RESUELTO fecha]` sin borrarla.
+- Al cerrar cada fase, las entradas de esa fase se mueven EN BLOQUE (sin
+  reescribir) a `/archive/BITACORA_faseN.md`, dejando en la viva un puntero +
+  las reglas de esa fase que sigan vigentes.
+- **Disparador del primer corte:** cierre de Fase 2. No hacer antes (el costo de
+  tokens de un MD largo es bajo; el riesgo real es dilución de señal, que el
+  marcador [RESUELTO] ya mitiga sin necesidad de cortar).
+
+### Filtro anti-basura de NER (2026-06-16)
+- spaCy marca como entidad cosas que no lo son ("Además", "Asimismo", frases
+  largas tipo "Un millón de personas deben inscribirse..."). El backfill ya aplica
+  un filtro mínimo (longitud 2–40, ≤4 espacios, stopwords de conectores). Funcionó
+  (ents_promedio sano = 16.9), pero es básico.
+- **Mejora futura:** filtro más fino si el ruido de NER infla pesos IDF de pares
+  aislados y ensucia clústeres. No urgente — los clústeres del 2026-06-16
+  salieron limpios con el filtro mínimo.
+
+### Feeds de cola verificados — RTVC y La Silla Vacía (2026-06-16)
+- Verificados con script de feeds (diligencia previa, NO activados):
+  - La Silla Vacía → https://www.lasillavacia.com/feed/ (rss, WordPress)
+  - RTVC Noticias → https://www.rtvcnoticias.com/rss.xml (rss; su /feed/ da 404)
+- **Pendiente antes de admitirlos:** diagnosticar su bucket de extracción
+  (articlebody vs trafilatura) — no heredan el de nadie. La Silla es WordPress
+  con paywall parcial (fuerte en análisis, bajo volumen de minuto a minuto); RTVC
+  es estatal. Activarlos solo tras decidir construir sobre 7 medios — hoy se
+  mantiene el banco de 5 validados.
+  
 ### ⭐ articleBody — RESUELTO/IMPLEMENTADO (2026-06-14)
 - La hipótesis de "migrar TODO a articleBody" se descartó con datos. El
   diagnóstico (muestra fresca + casos conocidos) mostró complementariedad:
@@ -172,6 +265,14 @@ cambios de esquema se hacen con migraciones que preservan datos.
 - **Criterios de admisión:** (1) cada medio nuevo debe aportar un ángulo que los
   actuales no cubren; (2) verificar feed con verificar_feeds.py antes de
   prometerle lugar. Medios de paywall duro aportan solo titulares/ledes.
+
+### Nav en móvil — diseño pendiente (2026-06-17)
+- `.masthead-nav` se oculta con `display:none` en pantallas <560px (globals.css).
+  Funciona en desktop; en móvil no hay acceso a /historias desde el masthead.
+- **Diseño pendiente:** decidir entre menú hamburguesa, barra secundaria bajo
+  el masthead, o integrar las rutas principales en el pie. No diseñar antes de
+  tener usuarios móviles reales — priorizar por datos de uso.
+- **No bloquea Fase 2:** la ruta /historias es accesible en móvil por URL directa.
 
 ### Filtros y navegación en la web (pendiente)
 - Falta: filtrar por medio, por tipo, por sección; búsqueda. La búsqueda por
