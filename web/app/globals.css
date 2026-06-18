@@ -703,7 +703,21 @@ a { color: inherit; }
 
 @media (max-width: 560px) {
   .bento-secundarias { grid-template-columns: 1fr; }
-  .masthead-nav { display: none; }
+  .masthead-nav {
+    width: 100%;
+    margin-left: 0;
+    gap: 0;
+    flex-wrap: wrap;
+    border-top: var(--linea);
+  }
+  .nav-link {
+    font-size: 0.78rem;
+    padding: 11px 10px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .nav-link + .nav-link { border-left: var(--linea); }
   .buscador-fila { flex-direction: column; }
   .buscador-btn { border-left: var(--linea); border-top: none; }
   .buscador-filtros { flex-direction: column; align-items: stretch; }
