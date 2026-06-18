@@ -14,6 +14,17 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.
 
+- **2026-06-17** — migración 000009_rls_lectura_stories (NO toca datos; es RLS).
+  stories y story_articles (creadas en 000007/000008) nacieron con row level
+  security ACTIVO pero SIN policy de SELECT. La clave publishable veía cero filas
+  SIN error (RLS no falla: filtra todo en silencio) → la web mostraba "Fase 2 en
+  construcción" con datos reales presentes. Fix: policy `lectura_publica` (SELECT
+  to public using(true)) en ambas, copia literal de la de articles/outlets. La
+  escritura sigue siendo solo del crawler con clave secreta (ignora RLS).
+  **Lección:** toda tabla nueva con RLS necesita su policy de lectura pública
+  explícita. El hueco pasó inadvertido porque el crawler (secret) nunca la necesitó;
+  solo se vio al ponerle la web (publishable) encima. Verificar policies al crear
+  tablas, no al consumirlas.
 - **2026-06-16** — backfill de Fase 2 (NO es truncate ni borrado de archivo).
   Se poblaron las columnas nuevas entidades (jsonb) y embedding (vector 384) de
   los 587 artículos vía UPDATE. Es UPDATE sobre articles PERO solo de campos de
@@ -48,6 +59,41 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Deuda técnica conocida
+
+### Ancla por cobertura — DISPARADOR CUMPLIDO (2026-06-17)
+- Re la deuda "score_cobertura no comparable entre clústeres" (2026-06-16): su
+  criterio de reactivación era "si el ancla por cobertura elige mal de forma
+  visible". **Se cumplió, medido al renderizar.** En el clúster de Chalá el ancla
+  "más neutral + completa" (mayor neutralidad×cobertura) salió siendo la reacción
+  política "Alcalde de Medellín… hombre de Calarcá protegido por Petro"
+  (neut 0.82 × cob 0.22 = 0.183, el máximo del clúster), no la nota factual de la
+  captura. Causa: cobertura premia mencionar muchas entidades; una reacción que
+  nombra a todos los actores puntúa alto pese a estar editorializada.
+- **Decisión:** el fix es de BACKEND (renormalizar cobertura por tamaño de clúster,
+  o recomputar es_ancla), su propia unidad de trabajo, medida — NO se maquilla en
+  la vista. La vista lo muestra fiel con aviso visible.
+- **Decisión ligada:** NO exponer los scores (neutralidad/cobertura/divergencia)
+  al público hasta que cobertura esté arreglada y sea explicable. Mostrar a un
+  público de verificadores un número que sabemos roto resta credibilidad. Hoy
+  quedan como diagnóstico (mono pequeño), no prominentes. No invertir en tooltips
+  sobre un score provisional.
+
+### Lookup por URL — best-effort, no garantía (2026-06-17)
+- **Medido:** el id del artículo vive siempre en el PATH en los 5 medios (sufijo
+  -3564106, -EK37683689); ningún query param es significativo → la normalización
+  quita TODOS los params (allowlist vacía). Pero el archivo guarda la URL exacta
+  del feed RSS/sitemap sin normalizar, y eso es inconsistente por medio: El
+  Espectador y Las2orillas con trailing slash, los demás sin; voragine.co sin www,
+  los demás con www.
+- **Mitigado:** variantesUrl() prueba 4 combinaciones (con/sin www × con/sin slash)
+  en un solo .in() — query visible, no match difuso. Cubre el caso frecuente (pegar
+  una nota de El Espectador sin el slash final).
+- **NO cubierto (deuda aceptada):** variantes AMP (amp.medio.com), móvil
+  (m.medio.com), o canónicas inconsistentes. Fallan silencioso ("no encontré tu
+  noticia" cuando sí está).
+- **Decisión:** NO arreglar más allá del fallback de 4 variantes.
+- **Reactivar SI:** usuarios reportan no encontrar notas que sí están archivadas,
+  o si AMP/m. se vuelven comunes en lo que pega la gente.
 ### es_parcial en El Espectador — investigado, NO es bug (2026-06-16)
 - **Reporte:** notas de El Espectador (y algunas de El Tiempo) marcadas
   es_parcial=true viéndose completas y largas. Sospecha de falso positivo.
@@ -175,6 +221,28 @@ cambios de esquema se hacen con migraciones que preservan datos.
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
+### Iconos "ⓘ más información" contextuales en la UI (2026-06-18)
+- Idea de Jota al recortar el aviso de "artículo sin clúster" en /buscar: el texto
+  largo invadía el UI de entrada. Se recortó a una frase. La idea futura es añadir
+  un icono "ⓘ" junto a textos breves que, al interactuar, revele el contexto
+  completo bajo demanda — sin saturar la vista inicial.
+- Patrón general, no solo para /buscar: aplicable a cualquier punto donde haga
+  falta explicación secundaria (badges es_parcial, scores, etc.).
+- NO implementar ahora. Es mejora de UX transversal; merece decidirse como patrón
+  (¿tooltip hover? ¿popover tap-friendly en móvil? ¿accesibilidad/foco?) en vez de
+  parchear caso por caso. Registrar para no perderla.
+  
+### Pequeños arreglos pendientes del buscador (2026-06-18)
+- Iteración B quedó funcional y con tests verdes, pero Jota detectó arreglos
+  menores a trabajar en chat aparte. (Detalle cuando se aborden — no se anticipan
+  aquí para no inventar alcance.)
+
+### JSDoc para chequeo de tipos sin migrar a TS (2026-06-17)
+- El único valor que TS aportaría es tipar el contrato de los 3 scores (que es_ancla
+  sea bool, scores números) para avisar si el shape de Supabase cambia. No justifica
+  meter TypeScript a un proyecto JS. Si alguna vez el shape del backend muerde,
+  JSDoc da chequeo en editor/CI sobre .jsx puro. No urgente.
+
 ### Política de archivado de bitácora (acordada 2026-06-16)
 - BITACORA es append-only y NO se condensa (condensar pierde el "por qué"
   original, que es justo lo que la bitácora preserva). Cuando una entrada se
@@ -266,7 +334,7 @@ cambios de esquema se hacen con migraciones que preservan datos.
   actuales no cubren; (2) verificar feed con verificar_feeds.py antes de
   prometerle lugar. Medios de paywall duro aportan solo titulares/ledes.
 
-### Nav en móvil — diseño pendiente (2026-06-17)
+### [RESUELTO 2026-06-18]Nav en móvil — diseño pendiente (2026-06-17)
 - `.masthead-nav` se oculta con `display:none` en pantallas <560px (globals.css).
   Funciona en desktop; en móvil no hay acceso a /historias desde el masthead.
 - **Diseño pendiente:** decidir entre menú hamburguesa, barra secundaria bajo
@@ -324,6 +392,20 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Notas de operación
+
+- **Capitalización de archivos (convención fijada 2026-06-17):** directorios de
+  ruta lowercase (app/buscar/, app/components/), archivos de componente PascalCase
+  (Buscador.js), archivos de ruta/lib lowercase (page.js, normalizarUrl.js).
+  Windows NO distingue mayúsculas pero Vercel (Linux) SÍ: un import que funciona en
+  local puede romper en producción. **Pendiente de limpieza:** revisar duplicados
+  por capitalización en la raíz (Cierre.md vs CIERRE.md, Arquitectura.md vs
+  ARQUITECTURA.md) — decidir UNA forma y alinear, o git los tratará como archivos
+  distintos.
+- **Flujo de migraciones es manual-doble:** pegar el SQL en el editor de Supabase
+  ES lo que cambia la base (fuente de verdad); copiar el archivo a
+  /supabase/migrations es solo espejo en git, NO se aplica solo. Riesgo: divergencia
+  silenciosa si se pega algo y no se guarda igual. Pegar SIEMPRE exactamente lo que
+  se guarda. Idea futura (otra sesión): invertir el flujo con `supabase db push`.
 
 - GitHub Actions: crons no son puntuales (corren con retraso variable). Normal en
   tier gratis. También: Actions desactiva crons tras 60 días sin commits del repo.

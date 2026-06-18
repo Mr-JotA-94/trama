@@ -154,7 +154,10 @@ def construir_clusteres(articulos, idf):
 # Los tres scores (contrato §6)
 # ---------------------------------------------------------------------
 def calcular_scores(ids, por_id, idf):
-    """Devuelve dict id -> (neutralidad, cobertura, divergencia) y marca anclas."""
+    """Devuelve (scores, anclas, ancla_principal).
+    scores: dict id -> (neutralidad, cobertura, divergencia).
+    anclas: set de ids ancla (principal + divergente).
+    ancla_principal: id de la card ancla principal (la que ganó el gate)."""
     vecs = {i: np.asarray(por_id[i]["embedding"]) for i in ids}
     centroide = np.mean([vecs[i] for i in ids], axis=0)
 
@@ -176,16 +179,31 @@ def calcular_scores(ids, por_id, idf):
         diverg = 1.0 - max(sims) if sims else 0.0
         scores[i] = (neutr, cob, diverg)
 
-    # Anclas: las 2 cards ancla del diseño (§6).
-    # Ancla principal: mayor neutralidad*cobertura. Ancla secundaria: mayor divergencia.
-    por_central = sorted(ids, key=lambda i: scores[i][0] * scores[i][1], reverse=True)
+    # Ancla principal: GATE de neutralidad + desempate por cobertura.
+    # Multiplicar neutr*cob fallaba en clústeres grandes: neutr es casi constante
+    # (~0.8-0.95) y cob de alta varianza, así que el producto ordenaba de facto
+    # por cobertura y dejaba anclar una REACCIÓN editorializada que satura las
+    # entidades centrales (caso Chalá, medido 2026-06-17). Separar las preguntas:
+    # primero "¿es central?" (piso p75 de neutralidad del clúster), luego entre
+    # los que pasan "¿es el más completo?" (mayor cobertura). Umbral p75 PROVISIONAL,
+    # calibrado sobre 2.5 días dominados por un macro-tema. Recalibrar con volumen.
+    neutrs = sorted(scores[i][0] for i in ids)
+    k = (len(neutrs) - 1) * 0.75
+    lo = int(k); hi = min(lo + 1, len(neutrs) - 1)
+    piso_neutr = neutrs[lo] + (neutrs[hi] - neutrs[lo]) * (k - lo)
+
+    candidatos = [i for i in ids if scores[i][0] >= piso_neutr] or list(ids)
+    por_central = sorted(candidatos, key=lambda i: scores[i][1], reverse=True)
     por_diverg = sorted(ids, key=lambda i: scores[i][2], reverse=True)
     anclas = {por_central[0]}
     for i in por_diverg:
         if i not in anclas:
             anclas.add(i)
             break
-    return scores, anclas
+    # Devolvemos la ancla principal EXPLÍCITA (la que ganó el gate). No se
+    # reelige fuera con neutr*cob: esa fórmula vieja era justo el bug (Chalá).
+    # `anclas` incluye además la divergente, que NO pasó necesariamente el gate.
+    return scores, anclas, por_central[0]
 
 # ---------------------------------------------------------------------
 # Escritura (borra y reconstruye)
@@ -197,9 +215,8 @@ def reescribir_stories(clusteres, por_id, idf):
     sb.table("stories").delete().not_.is_("id", "null").execute()
 
     for ids in clusteres:
-        scores, anclas = calcular_scores(ids, por_id, idf)
+        scores, anclas, ancla_principal = calcular_scores(ids, por_id, idf)
         fechas = [cuando(por_id[i]) for i in ids]
-        ancla_principal = max(anclas, key=lambda i: scores[i][0] * scores[i][1])
 
         story = sb.table("stories").insert({
             "titulo": por_id[ancla_principal]["titulo"],

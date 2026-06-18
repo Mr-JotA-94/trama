@@ -278,18 +278,7 @@ export default async function Historia({ params }) {
             y puede hacer ancla a una reacción que nombra muchos actores en lugar
             del artículo más factual. En clústeres chicos el efecto no se manifiesta.
             (Documentado en BITACORA 2026-06-16.) */}
-        {articulos.length >= 6 && (
-          <div className="ancla-deuda-aviso">
-            <strong>Criterio de ancla provisional</strong> —
-            en clústeres grandes score_cobertura puede premiar una{" "}
-            <em>reacción política</em> (que nombra muchos actores) sobre el
-            artículo más factual. Corrección pendiente en el backend:
-            renormalizar cobertura por tamaño del clúster o recomputar
-            es_ancla. <span className="ancla-deuda-ref">(deuda 2026-06-16)</span>
-          </div>
-        )}
-
-        {anclas.length > 0 ? (
+{anclas.length > 0 ? (
           <div className="bento-anclas">
             {anclas.map((a) => (
               <CardAncla key={a.url} articulo={a} label={labels.get(a.url)} />

@@ -1,129 +1,111 @@
 # TRAMA — Estado del proyecto (traspaso a nueva sesión)
 
-> **Propósito de este archivo:** dárselo a un chat nuevo de Claude para que retome
-> el proyecto con todo el contexto, sin releer conversaciones viejas. Léelo junto
-> con ARQUITECTURA.md (el plan completo) y BITACORA.md (decisiones y deuda).
-> Última actualización: **2026-06-15**.
-
----
+> Dáselo a un chat nuevo para retomar sin releer conversaciones. Léelo junto con
+> ARQUITECTURA.md (plan completo) y BITACORA.md (decisiones y deuda).
+> Última actualización: **2026-06-18**.
 
 ## Quién soy y cómo trabajamos
-
-Soy Jota (Johan). Claude es "Claudio". Reglas de trabajo que NO deben perderse:
-- **Challenge-first:** Claudio cuestiona enfoques con fallas ANTES de construir,
-  nunca obedece en silencio. Honestidad por encima de complacencia.
-- **Declarar Tier (0–3) + componentes load-bearing antes de construir.**
-- **Directo y conciso**, enfoque instructivo (me explica la lógica para aprender,
-  no solo me da código). Español.
-- **Medir antes de arreglar:** no se mete código por reflejo; se evalúa impacto vs
-  riesgo. Varias veces hemos decidido NO arreglar un bug medido de bajo impacto.
-- **Diagnóstico con datos reales, no suposiciones.** Cuando Claudio no puede
-  verificar algo en su entorno, me da un script para correr en mi máquina.
-- **Eficiencia de la sesión:** scripts chicos como código en el chat, no como
-  archivos. Para cambios de código, bloques/diffs puntuales, no reescribir archivos
-  enteros. No subir volcados de resultados completos: pegar solo el resumen.
+Soy Jota (Johan). Claude es "Claudio". Reglas que NO se pierden:
+- **Challenge-first:** cuestiona enfoques con fallas ANTES de construir. Honestidad
+  sobre complacencia.
+- **Declarar Tier (0–3) + load-bearing antes de construir.**
+- Directo, conciso, instructivo, en español. **Medir antes de arreglar.**
+- Diagnóstico con datos reales; si Claudio no puede verificar en su entorno, me da
+  script para correr aquí.
+- **Disciplina de sesión (aprendida a la mala 2026-06-17):** un chat = UNA unidad
+  de trabajo = un cierre. Cerrar en límites lógicos, no cuando se llene la ventana.
+  Un chat largo multitema arrastra todo el contexto cada turno y agota tokens. El
+  TRASPASO al día es lo que hace barato el arranque del siguiente chat.
+- App para pensar/decidir (genera el prompt) → Claude Code para tocar archivos →
+  de vuelta a la app el RESUMEN (no la sesión entera) para revisar.
+- **Flujo git (confirmado esta sesión):** branch ANTES de tocar código (no después,
+  o los commits caen en main). Un branch por unidad de trabajo, no por cambio.
+  Cambio → npm run dev → si gusta, commit dentro del branch → push → PR en GitHub
+  → validar en deploy preview de Vercel → merge → borrar branch (remoto al mergear,
+  local con `git branch -d`). DevTools (Ctrl+Shift+M, 375/560px) basta para verificar
+  layout móvil.
 
 ## Qué es Trama (una frase)
-
-Hemeroteca forense de medios colombianos: archiva el contenido públicamente
-visible de cada noticia con hash SHA-256 y marca de tiempo, para (Fase 2+) rastrear
-cómo un mismo hecho se cubre distinto entre medios y (Fase 3) señalar técnicas de
-persuasión. Objetivo de fondo: que el lector vea todos los ángulos, sin sesgo.
-Público: periodistas, verificadores, ciudadanos activos. NO el público general.
+Hemeroteca forense de medios colombianos: archiva el contenido públicamente visible
+con hash SHA-256 y marca de tiempo, para rastrear cómo un mismo hecho se cubre
+distinto entre medios (Fase 2) y señalar técnicas de persuasión (Fase 3). Público:
+periodistas, verificadores, ciudadanos activos.
 
 ## Stack (todo gratis)
-- **Crawler:** Python (httpx + trafilatura + articleBody del JSON-LD), corre en
-  GitHub Actions cada 6h
-- **BD:** Supabase (Postgres + pgvector), región São Paulo. Claves formato nuevo
-  (sb_secret_ para crawler / sb_publishable_ para web). RLS = solo lectura pública.
-- **Web:** Next.js 14 (Server Components), deploy en Vercel → trama-co.vercel.app
-- **Repo:** GitHub JotaLabs/trama (privado). Estructura: /crawler, /web,
-  /supabase/migrations, ARQUITECTURA.md, BITACORA.md, CIERRE.md
-- **Esquema versionado** en migraciones numeradas (van 6: la última es
-  000006_extraccion_por_medio).
+- **Crawler:** Python (httpx + trafilatura + articleBody JSON-LD), GitHub Actions 6h.
+- **BD:** Supabase (Postgres + pgvector), São Paulo. Claves sb_secret_ (crawler) /
+  sb_publishable_ (web, var NEXT_PUBLIC_SUPABASE_KEY). RLS = solo lectura pública.
+- **Web:** Next.js 14 (App Router, Server Components, JS/JSX — NO TypeScript),
+  Vercel → trama-co.vercel.app. CSS global en globals.css (tokens en :root).
+- **Repo:** GitHub JotaLabs/trama (privado, monorepo: un solo .git en raíz).
+  /crawler, /web, /supabase/migrations.
+- **Migraciones:** van 9. Última: 20260617000009_rls_lectura_stories.
 
-## DÓNDE ESTAMOS — estado real al 2026-06-15
+## DÓNDE ESTAMOS — 2026-06-18
 
-**Fase 1 COMPLETA y desplegada.** El crawler corre solo, la web está pública.
-- 5 medios balanceados: Vorágine, Las2orillas, El Espectador, El Tiempo, El Colombiano
-- Deduplicación por hash verificada en CI
-- Web con 3 vistas: registro (feed), expediente (artículo+hash), perfil de medio
-- Sistema de diseño propio: papel/tinta/resaltador/hilo rojo, tipografía Archivo
-- Extracción híbrida por bucket activa (migración #6)
+**Fase 1 COMPLETA y desplegada.** Crawler solo, web pública, 5 medios.
 
-**Estamos en la semana de observación de Fase 1** (criterio: 7 días verde, ≥150
-artículos, 5 medios, cero duplicados, tipos correctos ≥80%).
+**Fase 2 EN PRODUCCIÓN (vista + clustering).** Confirmado esta sesión: ya estaba
+fusionada a main; rama fase2-historias eliminada. Vive en trama-co.vercel.app/historias
+y /historia/[id]. (Se eliminó la contradicción del TRASPASO anterior, que pedía
+"fusionar fase2-historias" cuando ya estaba mergeado.)
 
-**Lo último que hicimos (sesión 2026-06-15):** sesión de diseño puro. Se prototipó
-iterativamente la vista de clúster de Fase 2 en mockup interactivo. Decisiones de
-diseño cerradas y listas para implementar cuando el clustering esté listo.
+**Fase 2 clustering COMPLETO y validado** (corre manual, no automatizado).
+587 artículos → 20 clústeres / 82 noticias, limpios a ojo. Dos compuertas AND:
+peso IDF de entidades compartidas ≥20 Y coseno ≥0.70. 3 scores por artículo
+(neutralidad, cobertura, divergencia) en story_articles. Umbrales provisionales
+(muestra dominada por un macro-tema; re-verificar con semanas de volumen).
 
-## DISEÑO DE FASE 2 — decisiones cerradas (sesión 2026-06-15)
+**Ajustes de UI de esta sesión (2026-06-18) — MERGEADOS a main.** Cuatro cambios
+Tier 2 en un solo branch (fase2-ajustes-web), vía PR:
+- **Nav móvil:** .masthead-nav ahora visible y compacta en <560px (cierra deuda
+  del 2026-06-17). Sin hamburguesa ni JS.
+- **Jerarquía del nav:** "Historias" primero y destacado como entrada principal;
+  "Registro" secundario. NO se cambió la home/raíz ni las rutas (decisión deliberada:
+  el Registro sigue siendo la defensa de arranque en frío).
+- **/buscar — estado "artículo sin clúster" unificado:** mismo render por texto y
+  por URL. Título del artículo prominente, aviso de "sin historia" recortado a una
+  frase, se mantiene "ver la nota archivada". Lógica de lookup por URL (4 variantes
+  www×slash) intacta.
+- **/articulo/[id] — link al clúster:** bloque "Parte de una historia →" al inicio,
+  solo si el artículo pertenece a un clúster; nada si no.
 
-Estas decisiones están aprobadas visualmente y deben guiar la implementación:
-
-**Vista de historia (expediente de clúster):**
-- Resumen del hecho: bloque prominente arriba, placeholder en Fase 2, generado
-  por LLM en Fase 3. Anotación visible: "Fase 3 · generado por LLM por clúster".
-- Layout bento editorial: 2 cards ancla (tamaño completo, borde izquierdo 3px
-  del color del medio) + N cards secundarias (grid compacto, borde 1px).
-- Criterio de anclas: mayor neutralidad + mayor cobertura de hechos + mayor
-  divergencia semántica del clúster. Calculable con embeddings. El label en la
-  UI debe ser explícito — es un contrato con el backend.
-- Análisis de persuasión: acordeón colapsable por card, disponible en Fase 3.
-  Placeholder visible desde Fase 2 con anotación de fase.
-- Sección del artículo: esquina superior derecha en cada card y en el feed.
-- Reacciones (opinión/análisis): sección separada debajo de las versiones de
-  noticia, no mezcladas con el clúster núcleo.
-
-**Hilo cronológico:**
-- Muestra primera captura y última edición por medio.
-- Ediciones: hora original tachada (line-through + opacity 0.45) + hora nueva
-  en rojo + badge "editada".
-- Cada nodo es clickeable y abre popup con historial completo de versiones
-  (todas las capturas con hash de ese medio en esa historia).
-- Nodo de historia relacionada: círculo hueco al final del hilo, separado por
-  segmento discontinuo (· · ·), con flecha ↗ y título abreviado.
-- **Pendiente de precisar en implementación:** el hilo no debe ser línea recta.
-  Usar SVG path con curvas tipo "hilo que cuelga entre clavos" (curvas de Bézier
-  con tensión orgánica). El nodo de historia relacionada se desvía hacia una
-  esquina (derecha-abajo preferido). Un solo desvío visible por historia; las
-  demás conexiones viven en el grafo panorámico. Prioridad: que no se vea
-  desordenado — elegancia sobre dramatismo.
-
-**Grafo panorámico de historias conectadas:**
-- Botón expandible al final del expediente: "Ver historias conectadas".
-- Nodo activo con borde #C8442E 2px; nodos relacionados con borde normal.
-- Líneas SVG discontinuas entre nodos, dibujadas dinámicamente sobre posición
-  real del DOM (no coordenadas hardcodeadas).
-- Cada nodo es clickeable → abre el expediente de esa historia.
-- Disponible en Fase 2 avanzada (requiere relaciones entre clústeres calculadas).
-  En Fase 2 temprana: placeholder con nodos ilustrativos y nota de fase.
-
-**Barra de búsqueda:**
-- Input con ícono lupa + botón "Filtros" que despliega panel.
-- Filtros: sección, tipo (noticia/opinión/análisis/editorial), medio, fecha desde,
-  fecha hasta. Botón "Aplicar".
-- Búsqueda por texto: aprovechar entidades/embeddings de Fase 2. En Fase 2
-  temprana: búsqueda simple sobre título.
+### Decisiones de la vista (cerradas, encarnadas en el código)
+- **Átomo = `url`**, no el medio ni la captura. Colapsar capturas del mismo url.
+- Representante del artículo = última captura (título/scores/es_parcial de ahí).
+- "editada" solo si cambió titular o bajada (señal editorial confiable); cambio
+  solo de cuerpo → "N capturas", sin afirmar edición.
+- es_ancla = OR de capturas (no se recalcula en la vista; es contrato del pipeline).
+- Hilo: un nodo por artículo (url), coloreado por medio, ordenado por primera
+  captura.
+- **Título del feed = artículo de mayor score_neutralidad**, NO stories.titulo.
 
 ## PRÓXIMO PASO cuando retomemos
+1. **Verificar en producción los 4 ajustes de UI** (especialmente nav móvil real y
+   link al clúster en /articulo). Confirmar si el link aparece en capturas viejas o
+   solo en el representante (depende de cómo story_articles referencia el article_id
+   — pendiente de confirmar).
+2. **Arreglo BACKEND del ancla por cobertura** — disparador CUMPLIDO (visible en
+   Chalá, ver BITACORA). Fix es backend, no de la vista. Es la deuda más madura.
+3. Decisión de automatizar el clustering (solo tras semanas de volumen).
+4. Limpieza pendiente: duplicados de capitalización en la raíz (Cierre/CIERRE,
+   Arquitectura/ARQUITECTURA) y alinear tintas de ARQUITECTURA §7 con globals.css.
+5. Fase 3 más adelante.
 
-**Opción A (recomendada):** completar la semana de observación de Fase 1 y
-arrancar Fase 2 — clustering. El diseño ya está cerrado; la siguiente sesión
-de trabajo real es implementar el pipeline de entidades + embeddings.
-
-**Opción B:** si la observación ya pasó satisfactoriamente, ir directo a las
-decisiones pendientes de Fase 2: umbral de similitud, ventana temporal, clústeres
-de tamaño 1. Ver BITACORA.md.
+## Deudas activas (detalle en BITACORA)
+- **Ancla por cobertura elige mal** en clústeres grandes — disparador CUMPLIDO
+  (visible en Chalá). Fix es backend, no de la vista.
+- **Lookup por URL best-effort** — falla silencioso con variantes AMP/m./canónicas
+  inconsistentes. Mitigado parcialmente con las 4 variantes www×slash.
 
 ## Fase 2 NO obliga a reconstruir al agregar medios
-El clustering opera sobre artículos, no sobre medios. Agregar un medio = config
-nueva en outlets. Solo los umbrales se recalibran. Validar clustering con 5 medios
-antes de expandir. Cola: Colombia+20, La Silla Vacía, Semana, Caracol/W Radio, RTVC.
+El clustering opera sobre artículos. Agregar medio = config en outlets; solo se
+recalibran umbrales. Validar con 5 medios antes de expandir. Cola: La Silla Vacía
+y RTVC (feeds ya verificados, no activados), Colombia+20, Semana, Caracol/W Radio.
 
-## Cómo verificar el estado en cualquier momento
-- Salud del archivo: contar artículos/tipos/secciones por medio en Supabase.
-- Buckets de extracción: `select slug, extraccion from outlets order by slug;`
-- Corridas del crawler: pestaña Actions del repo (deben estar en verde).
-- La web: trama-co.vercel.app
+## Cómo verificar el estado
+- Web vista de Fase 2: trama-co.vercel.app/historias y /historia/[id] (en
+  producción). Para desarrollo local: cd web && npm run dev → localhost:3000.
+- RLS: `select * from pg_policies where tablename in ('stories','story_articles');`
+- Clustering: stories/story_articles tienen filas (20 clústeres).
+- Crawler: pestaña Actions en verde.
