@@ -11,6 +11,7 @@ import { redirect } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { normalizarUrl, variantesUrl } from "@/lib/normalizarUrl";
 import { Buscador } from "@/app/components/Buscador";
+import ArticuloSinHistoria from "@/app/components/ArticuloSinHistoria";
 
 export const revalidate = 0;
 
@@ -44,7 +45,7 @@ export default async function Buscar({ searchParams }) {
   // Q1: buscar el artículo entre las 4 variantes de URL exacta del archivo
   const { data: captures, error: errorCaptures } = await supabase
     .from("articles")
-    .select("id, fecha_captura")
+    .select("id, titulo, fecha_captura")
     .in("url", variantes)
     .order("fecha_captura", { ascending: false });
 
@@ -111,18 +112,7 @@ export default async function Buscar({ searchParams }) {
     <>
       <h1 className="articulo-titulo">Buscar por URL</h1>
       <Buscador action="/historias" url={rawUrl} labelTexto="Buscar en historias" />
-      <div className="buscar-resultado">
-        <p className="buscar-resultado-titulo">
-          Esta nota está archivada, pero aún no forma parte de ninguna historia.
-        </p>
-        <p className="buscar-resultado-sub">
-          El clustering agrupa artículos cuando 2+ medios cubren el mismo hecho.
-          Esta nota no tiene cobertura cruzada en el archivo todavía.
-        </p>
-        <Link href={`/articulo/${latest.id}`} className="enlace-original">
-          Ver la nota archivada →
-        </Link>
-      </div>
+      <ArticuloSinHistoria articulos={[latest]} />
     </>
   );
 }

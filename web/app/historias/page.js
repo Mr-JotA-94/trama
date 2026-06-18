@@ -17,6 +17,7 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { tituloCanonico } from "@/lib/colapsarCluster";
 import { Buscador } from "@/app/components/Buscador";
+import ArticuloSinHistoria from "@/app/components/ArticuloSinHistoria";
 
 export const revalidate = 300;
 
@@ -100,7 +101,7 @@ export default async function Historias({ searchParams }) {
   if (q) {
     const { data: matchArticles, error: errA } = await supabase
       .from("articles")
-      .select("id")
+      .select("id, titulo")
       .ilike("titulo", `%${q}%`)
       .limit(200);
 
@@ -141,10 +142,7 @@ export default async function Historias({ searchParams }) {
       return (
         <>
           <Buscador {...buscadorProps} q={q} />
-          <p className="buscar-resultado-sub">
-            Artículos encontrados en el registro, pero ninguno forma parte de una
-            historia todavía.
-          </p>
+          <ArticuloSinHistoria articulos={matchArticles} />
         </>
       );
     }
