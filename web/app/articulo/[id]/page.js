@@ -16,16 +16,20 @@ function fechaCO(ts) {
 }
 
 export default async function Articulo({ params }) {
-  const { data: a, error } = await supabase
-    .from("articles")
-    .select("*, outlets(nombre, slug)")
-    .eq("id", params.id)
-    .single();
+  const [{ data: a, error }, { data: sa }] = await Promise.all([
+    supabase.from("articles").select("*, outlets(nombre, slug)").eq("id", params.id).single(),
+    supabase.from("story_articles").select("story_id").eq("article_id", params.id).maybeSingle(),
+  ]);
 
   if (error || !a) notFound();
 
   return (
     <>
+      {sa?.story_id && (
+        <p className="historia-ref">
+          <Link href={`/historia/${sa.story_id}`}>Parte de una historia →</Link>
+        </p>
+      )}
       <h1 className="articulo-titulo">{a.titulo}</h1>
       {a.subtitulo && <p className="articulo-sub">{a.subtitulo}</p>}
 

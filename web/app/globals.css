@@ -246,6 +246,20 @@ a { color: inherit; }
   text-decoration-color: var(--hilo);
 }
 
+/* ---- Referencia a historia (artículo → clúster) -------------------- */
+.historia-ref {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--gris-archivo);
+  border-left: 3px solid var(--hilo);
+  padding: 4px 10px;
+  margin-bottom: 20px;
+}
+.historia-ref a { color: var(--hilo); text-decoration: none; }
+.historia-ref a:hover { text-decoration: underline; }
+
 /* ---- Breadcrumb ---------------------------------------------------- */
 .breadcrumb {
   font-family: var(--f-ui), sans-serif;
