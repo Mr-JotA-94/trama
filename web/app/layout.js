@@ -2,6 +2,7 @@
 // y pinta el membrete (masthead) presente en todas las páginas.
 import "./globals.css";
 import Link from "next/link";
+import NavLinks from "./components/NavLinks";
 import { Archivo_Black, Archivo, Source_Serif_4, IBM_Plex_Mono } from "next/font/google";
 
 // Display: Archivo (fundición Omnibus-Type, Argentina). La elección es el concepto.
@@ -27,8 +28,7 @@ export default function RootLayout({ children }) {
             <Link href="/" className="brand">TRAMA</Link>
             <p className="tagline">Hemeroteca forense · medios colombianos</p>
             <nav className="masthead-nav">
-              <Link href="/" className="nav-link">Registro</Link>
-              <Link href="/historias" className="nav-link">Historias</Link>
+              <NavLinks />
             </nav>
           </div>
           {/* El hilo: la línea roja de investigación que recorre el sitio */}
