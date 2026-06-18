@@ -239,6 +239,12 @@ a { color: inherit; }
   color: var(--gris-archivo);
 }
 .nav-link:hover { color: var(--tinta); text-decoration: underline; text-decoration-color: var(--hilo); }
+.nav-link-activo {
+  color: var(--tinta);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: var(--hilo);
+}
 
 /* ---- Breadcrumb ---------------------------------------------------- */
 .breadcrumb {
