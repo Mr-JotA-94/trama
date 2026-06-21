@@ -302,6 +302,27 @@ a { color: inherit; }
 .historia-titulo a { text-decoration: none; }
 .historia-titulo a:hover { text-decoration: underline; text-decoration-color: var(--hilo); }
 
+/* ---- Control de orden del feed ------------------------------------- */
+.historias-orden { display:flex; gap:0; margin:.5rem 0 1rem; flex-wrap:wrap; }
+.historias-orden a {
+  padding:.3rem .7rem; border:1px solid var(--tinta); border-left-width:0;
+  font-family:var(--f-mono, monospace); font-size:.8rem; text-decoration:none;
+  color:var(--tinta); background:var(--papel);
+}
+.historias-orden a:first-child { border-left-width:1px; }
+.historias-orden a.activo { background:var(--tinta); color:var(--papel); }
+
+/* ---- Paginación del feed ------------------------------------------- */
+.paginacion { display:flex; gap:0; margin:1.5rem 0; flex-wrap:wrap; align-items:center; }
+.paginacion a, .paginacion span {
+  padding:.3rem .6rem; border:1px solid var(--tinta); border-left-width:0;
+  font-family:var(--f-mono, monospace); font-size:.85rem; min-width:2rem;
+  text-align:center; text-decoration:none; color:var(--tinta);
+}
+.paginacion > :first-child { border-left-width:1px; }
+.paginacion .actual { background:var(--tinta); color:var(--papel); }
+.paginacion .disabled { color:var(--gris-archivo, #8C8A82); }
+
 /* ---- Vista de historia (expediente de clúster) --------------------- */
 .historia-header { margin-bottom: 22px; }
 .historia-header-meta {
