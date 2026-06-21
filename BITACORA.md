@@ -14,6 +14,13 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.
 
+- **2026-06-18** — backfill de Fase 2 sobre artículos nuevos (NO es truncate).
+  395 artículos nuevos (capturados por el crawler desde el último backfill) tenían
+  embedding NULL; backfill los rellenó (entidades + embedding) vía UPDATE. Banco:
+  587 → 982 artículos. Idempotente, solo campos de procesamiento; contenido_visible
+  y hash intactos. Tras esto, clustering reconstruyó stories/story_articles (derivado,
+  no archivo): 20 → 48 clústeres. Inmutabilidad respetada.
+
 - **2026-06-17** — migración 000009_rls_lectura_stories (NO toca datos; es RLS).
   stories y story_articles (creadas en 000007/000008) nacieron con row level
   security ACTIVO pero SIN policy de SELECT. La clave publishable veía cero filas
@@ -60,7 +67,73 @@ cambios de esquema se hacen con migraciones que preservan datos.
 
 ## Deuda técnica conocida
 
-### Ancla por cobertura — DISPARADOR CUMPLIDO (2026-06-17)
+### Fix título-cita en el feed (display) — APLICADO 2026-06-21
+- **Contexto:** la deuda titular-cita (2026-06-18) se volvió visible en producción
+  (criterio de reactivación cumplido: 2 títulos-cita en el feed). Al investigar el
+  punto #1 del TRASPASO (disconnect feed↔ancla) se halló la causa estructural: el
+  título de display se computa en TRES lugares con criterios distintos —es_ancla
+  (gate p75, backend), stories.titulo (hereda del ancla), y tituloCanonico
+  (frontend, lib/colapsarCluster.js)—. El feed usa el tercero: máxima neutralidad
+  PURA, justo la fórmula que el arreglo del ancla del 2026-06-18 descartó. Por eso
+  ese arreglo era invisible en el feed.
+- **Medido (diag_titulos.py sobre 48 clústeres):** 5 títulos-cita detectados, pero
+  1 era falso positivo de la heurística inicial: «Comandante… anunció que 99
+  disidentes de 'Walter Mendoza'…» — comillas envuelven un ALIAS, y el fallback
+  "comillas + verbo de habla" sobre-disparó. Lección: en español la señal real es
+  la cláusula entre comillas ADYACENTE a dos puntos (`"cita":` o `:"cita"`), no el
+  verbo suelto. Heurística afinada a solo ese patrón (RE_CITA_DELANTE/RE_CITA_ATRAS,
+  cláusula ≥15 chars): 4/4 citas reales, 0 falsos positivos.
+- **Fix:** tituloCanonico (lib/colapsarCluster.js) ahora descarta titulares-cita;
+  elige el titular noticia más neutral del subconjunto no-cita. Si todas las
+  noticias son cita, cae a la más neutral (degradación elegante, no inventa título).
+  Tier 2, presentación, NO toca scoring ni es_ancla — la cita puede seguir siendo
+  es_ancla de las cards del bento; lo que cambia es solo el NOMBRE de la historia.
+- **Validado (diag_fix_titulos.py, réplica de la heurística en Python sobre los 48):**
+  3 títulos cambian (Petro b56729d8, Gaona 974f9571, Medicina Legal 3ce9745f), los
+  tres a no-cita; 0 clústeres fuera de esos se mueven; residual = solo Germán
+  656a7e6c (sus 2 noticias son ambas cita, sin alternativa); 0 caídas a fallback.
+  Las alternativas elegidas eran tipo=noticia (confirmado: no cayeron a residual).
+- **Residual aceptado:** Germán (1/48). Único caso donde generar título sería el
+  único recurso; por 1 clúster NO se rompe inmutabilidad. Confirma parar en heurística.
+- **Reactivar SI:** aumenta el % de clústeres sin alternativa no-cita con volumen, o
+  se decide que el residual es inaceptable de cara al público.
+
+### Doble-cómputo del título de historia — deuda estructural (2026-06-21)
+- **Síntoma:** "qué texto representa el clúster" se decide en dos capas con criterios
+  que pueden divergir: backend (stories.titulo, hereda del ancla por gate p75) y
+  frontend (tituloCanonico, máx neutralidad no-cita). Hoy COINCIDEN de facto porque
+  ambos sanean, pero el día que cambie el criterio de ancla otra vez, se
+  desincronizan silenciosamente (ya pasó una vez: el arreglo del ancla 2026-06-18
+  no surfaceó en el feed por esto mismo).
+- **Decisión:** NO arreglar ahora. Documentar. El fix sería una fuente única de
+  verdad para el título de display, pero hoy no hay divergencia visible.
+- **Reactivar SI:** se cambia el criterio de selección de ancla, o aparece un título
+  de feed que no concuerda con el ancla del expediente /historia/[id].
+
+### [SUPERADO 2026-06-21 → ver "Fix título-cita en el feed"] Titular-cita de alta neutralidad ancla el clúster — el gate no la atrapa (2026-06-18)
+- **Medido** al correr el banco 2× (48 clústeres): el gate p75 resuelve la
+  *reacción de baja neutralidad* (Chalá) pero NO la *cita declarativa de alta
+  neutralidad*. Caso "gringo" (n=6): ancla principal = «"Al parecer no violó a
+  ninguno de sus hijos": presidente Petro…» (neut 0.920, cob 0.465). ACTUAL, p50 y
+  p75 coinciden los tres: el gate no la corrige porque la cita SÍ pasa el piso de
+  neutralidad (el embedding la ve central) y tiene la cobertura más alta.
+- **Patrón, no caso único:** también n=2 "Germán le entregó sus programas bandera"
+  y "No era una campaña cualquiera, fue una cruzada nacional". Titulares-cita de
+  actor político anclando clústeres. Casi invisible con 20 clústeres, visible con 48.
+- **Causa:** ninguna de las dos compuertas ni los tres scores miden "el titular es
+  una cita declarativa, no una descripción del hecho". Es ortogonal a neutralidad y
+  cobertura. Para Trama es justo el encuadre que el producto debe *señalar*, no
+  adoptar como voz neutral del clúster.
+- **Decisión:** NO arreglar ahora. Medido (existe) pero el fix es caro y riesgoso:
+  detectar cita declarativa es heurística de lenguaje (comillas en titular, verbo
+  de habla "dijo/aseguró/señaló", NER de actor como sujeto), toca el scoring
+  (load-bearing). Es su propia unidad de trabajo con su propio diagnóstico.
+- **Reactivar SI:** se decide priorizar calidad de anclas antes que volumen, o si
+  al exponer scores/anclas al público el patrón se vuelve embarazoso de forma visible.
+- **Matiz honesto:** el arreglo del ancla de hoy cerró UNA falla (reacción de baja
+  neutralidad), no las dos. Esta es la otra cara del mismo problema de anclaje.
+  
+### [RESUELTO 2026-06-18] Ancla por cobertura — DISPARADOR CUMPLIDO (2026-06-17)
 - Re la deuda "score_cobertura no comparable entre clústeres" (2026-06-16): su
   criterio de reactivación era "si el ancla por cobertura elige mal de forma
   visible". **Se cumplió, medido al renderizar.** En el clúster de Chalá el ancla
@@ -77,6 +150,23 @@ cambios de esquema se hacen con migraciones que preservan datos.
   público de verificadores un número que sabemos roto resta credibilidad. Hoy
   quedan como diagnóstico (mono pequeño), no prominentes. No invertir en tooltips
   sobre un score provisional.
+- **[RESUELTO 2026-06-18]** El fix candidato registrado (renormalizar cobertura por
+  tamaño / pesar por frecuencia) se MIDIÓ y se DESCARTÓ: pesar la cobertura por
+  frecuencia dentro del clúster *reforzaba* la reacción en vez de castigarla
+  (cob_frq de la reacción del Alcalde = 0.49 > cob actual 0.22). La reacción no gana
+  por nombrar actores periféricos sino por saturar densamente las entidades
+  centrales. Diagnóstico real: `neutr` es casi constante en un clúster (~0.80–0.95)
+  y `cob` de alta varianza, así que el producto `neutr*cob` ordenaba de facto por
+  cobertura. El bug no estaba en la cobertura sino en MULTIPLICAR dos scores de
+  escalas incomparables.
+- **Fix aplicado:** separar las preguntas. Gate de neutralidad (piso p75 del clúster)
+  + desempate por cobertura entre los que pasan, para el ancla PRINCIPAL. El ancla
+  secundaria sigue siendo la de mayor divergencia. Enmienda a ARQUITECTURA §6.
+- **Validado sobre la base** (no sobre predicción): Chalá ancla "Legalizan captura"
+  (neut 0.913), la reacción del Alcalde (neut 0.823) queda es_ancla=false. Sin
+  regresión en clústeres ya sanos (Niño Guerrero, Air-e). Confirmado de nuevo con
+  banco 2× (48 clústeres). Umbral p75 PROVISIONAL, calibrado sobre días dominados
+  por macro-temas; recalibrar con volumen multitema.
 
 ### Lookup por URL — best-effort, no garantía (2026-06-17)
 - **Medido:** el id del artículo vive siempre en el PATH en los 5 medios (sufijo
@@ -131,7 +221,7 @@ cambios de esquema se hacen con migraciones que preservan datos.
 - **Fix candidato:** normalizar cobertura por tamaño del clúster, o medirla solo
   contra las entidades de las anclas en vez de la unión total.
 
-### Esquema vivo manda — verificar antes de escribir código (2026-06-16)
+### [RESUELTO] Esquema vivo manda — verificar antes de escribir código (2026-06-16)
 - **Qué pasó:** el clustering encadenó 4 errores de insert porque su código
   asumía el esquema de la migración 000007 dictada en chat, pero la base tenía
   un esquema distinto de stories/story_articles (boceto previo: titulo_descriptivo,
@@ -180,24 +270,8 @@ cambios de esquema se hacen con migraciones que preservan datos.
   palabras legítimas). Señal CREÍBLE del medidor: fuga_boilerplate=0% (limpieza
   sólida) y 'corto' (deuda real arriba). Las otras columnas, leer con pinza.
 
-### Extracción El Tiempo — notas con embed temprano (2026-06-13)
-- **Síntoma:** ~1.7% de notas de El Tiempo (casos: Cartagena, El Poblado) quedan
-  cortadas al lead. El cuerpo real existe en el HTML pero trafilatura no lo extrae.
-- **Causa probable:** un embed (tweet/video) insertado cerca del inicio confunde
-  a trafilatura, que lo toma como fin del contenido. NO es la firma
-  "PERIODISTA/Actualizado:" (esa está en todas las notas y no rompe), NI la
-  longitud (promedio de El Tiempo es sano, 4441 chars).
-- **Decisión:** NO arreglar. Impacto bajo (1.7%), riesgo del fix alto (código
-  nuevo en el componente más delicado, podría romper el 98% que funciona).
-- **Reactivar SI:** al sumar volumen o medios, el % de notas <600 chars en El
-  Tiempo supera ~10%, o si se ve afectando notas claramente relevantes.
-- **Fix candidato:** extractor específico para El Tiempo vía articleBody del
-  JSON-LD (no verificado aún si El Tiempo lo expone — correr probar_tiempo2.py).
 
-### Sección de Las2orillas no disponible (2026-06-12)
-- La sección no vive en la URL del artículo de Las2orillas (vive en URLs de
-  categoría /c/seccion/). Se guarda null.
-- **Fix candidato:** extraer del HTML/breadcrumb al crawlear. Baja prioridad.
+
 
 ### Clasificador de tipo en Las2orillas y Vorágine (2026-06-12)
 - Ninguno usa /opinion/ en el path, así que si publican columnas de opinión las
@@ -210,17 +284,99 @@ cambios de esquema se hacen con migraciones que preservan datos.
 - **Fix candidato:** paginación, o feed que garantice presencia de todos los
   medios. Resolver en iteración de web.
 
-### rfind vs find en limpiar_contenido — REVERTIR (2026-06-13)
-- Se cambió find→rfind en el corte de cabecera creyendo que el título duplicado
-  causaba el recorte de El Poblado. El script probar_rfind.py demostró que el
-  título aparece 1 sola vez en el texto extraído: find y rfind dan idéntico.
-  El cambio no rompe nada pero tampoco arregla nada.
-- **Acción pendiente:** revertir a find por honestidad del código.
+
 
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
+### Estabilidad de enlaces de historias (UUID estable) — prerequisito de automatización (2026-06-21)
+- **Problema:** reescribir_stories (clustering_fase2.py) hace delete()+insert() de
+  stories en cada corrida → uuid nuevo cada vez → todo enlace /historia/[uuid] que
+  alguien comparta (redes, evidencia, cita) se ROMPE tras la siguiente corrida. Para
+  una hemeroteca forense cuyo valor es "comparte este link como prueba", es una
+  herida en la propuesta, no un detalle.
+- **NO es optimización de cuota** (no hay cuota: el clustering es coseno en numpy
+  sobre embeddings ya calculados, cero API). Es identidad + escala. Se aclara porque
+  surgió de una idea de "recalcular solo lo reciente para ahorrar" que se descartó
+  (ver abajo).
+- **Por qué importa el ORDEN:** es prerequisito de automatizar clustering. Hoy se
+  corre a mano y esporádico, daño bajo; automatizado, se multiplica. Ids estables
+  ANTES de automatizar, no al revés. Reordena la cola por encima de "automatizar".
+- **Opciones a evaluar (sin decidir):**
+  * ID determinista por semilla estable: derivar el id del artículo más antiguo del
+    clúster (primera captura casi nunca cambia). Robusto al crecimiento; borde =
+    fusiones de clústeres (¿qué semilla gana?).
+  * Tabla story_identity persistente que sobreviva los truncates y mapee
+    firma-de-clúster → uuid estable, reusándolo entre corridas. Más robusto, más complejo.
+  * Hash del conjunto de artículos: DESCARTADO de entrada — si el clúster gana un
+    artículo (lo esperado), el hash cambia. No sirve.
+
+### Clustering incremental (recalcular solo lo reciente) — DESCARTADO como optimización (2026-06-21)
+- Idea: no recalcular clústeres viejos cada corrida, solo los recientes, para
+  "ahorrar consumo/tiempo".
+- **Descartada con tres razones:** (1) lo caro (embeddings + NER) YA es incremental
+  vía backfill idempotente; el clustering NO recalcula embeddings, solo hace coseno
+  en numpy sobre vectores existentes — cero API, cero cuota, segundos a 982 arts.
+  Optimizar es prematuro (el O(n²) real aparece a decenas de miles, 10-14 meses
+  lejos). (2) Convertiría stories de CACHÉ DERIVADA PURA (reconstruible) a ESTADO,
+  con casos borde feos (artículo nuevo a clúster viejo: ¿re-ancla?; artículo puente
+  fusiona clústeres: ¿qué uuid sobrevive?). (3) FOSILIZA umbrales provisionales:
+  hoy cada recompute total es la oportunidad de re-juzgar el banco al recalibrar
+  IDF/coseno/p75; incremental congela decisiones con umbrales viejos — justo lo que
+  el TRASPASO bloquea hasta tener volumen multitema.
+- **El grano de verdad de la intuición** se rescató como deuda aparte: la
+  inestabilidad de UUID (arriba). Esa SÍ es real; la optimización de cómputo no.
+
+### Generar título de historia por LLM — DESCARTADO (2026-06-21)
+- Idea: usar NVIDIA NIM para generar el título de cada clúster. Cuota viable (48
+  requests, ~1-2 min, sin créditos que gastar — la cuenta es rate-limited 40rpm).
+- **Descartado pese a viabilidad de cuota**, por cuatro razones de fondo: (1)
+  inmutabilidad/honestidad forense — un título generado es texto que ningún medio
+  escribió, en el elemento más prominente del feed, sin etiqueta de IA (distinto del
+  resumen LLM de Fase 3, que va ETIQUETADO como análisis). (2) no-determinismo
+  rompe reproducibilidad. (3) alucinación en la cara del producto. (4) no es el
+  arreglo rápido — monta media infra de Fase 3 dentro de Fase 2.
+- **Jerarquía registrada:** heurística de selección (lo hecho hoy) < selección por
+  LLM (el modelo ELIGE entre titulares reales, no inventa, no alucina, mantiene
+  inmutabilidad) < generación por LLM (escribe título nuevo, rompe inmutabilidad).
+  Si la heurística alguna vez se queda corta, el escalón siguiente es SELECCIÓN por
+  LLM, no generación. Probablemente ese es el óptimo para Trama.
+  
+### Proveedor LLM de Fase 3 — DECIDIDO: NVIDIA NIM (2026-06-19)
+- Cambio: el plan era Groq + Llama 3.3. Se adopta NVIDIA NIM (catálogo hosted
+  build.nvidia.com), endpoint OpenAI-compat (https://integrate.api.nvidia.com/v1),
+  modelo default meta/llama-3.3-70b-instruct.
+- Por qué NVIDIA sobre Groq: variedad de modelos para evaluar (Nemotron Super 49b,
+  Qwen, etc. bajo un mismo endpoint) y verificado que devuelve JSON estricto en
+  español a temp baja. NO se eligió por potencia: reasoning models (DeepSeek,
+  Nemotron Ultra) quedan descartados para esta tarea — más lentos, más cuota, cero
+  ganancia en un clasificador conservador con JSON.
+- Verificación de sostenibilidad (lo que destrababa la decisión): el panel de la
+  cuenta muestra rate-limit (Up to 40 rpm), NO un balance de créditos que se agota.
+  Para un job batch recurrente como Fase 3, eso es lo que se necesitaba. La
+  ambigüedad "créditos vitalicios vs rate-limit" de la documentación pública NO
+  aplica a esta cuenta. (Headers de respuesta NO exponen el límite; vive solo en
+  el panel UI.)
+- Es llamada API pura: NO se hostea nada, la GPU local (AMD) es irrelevante. El
+  cómputo corre en datacenters NVIDIA. El "Downloadable NIM" (contenedor self-host
+  + licencia AI Enterprise) es OTRO producto, fuera de alcance.
+- Decisiones de implementación atadas:
+  * Cliente SWAPPABLE: base_url + api_key + model_id en config/.env, nunca hardcode.
+    Razón dura: el catálogo NIM rota casi a diario (doc "updated 10h ago") y no hay
+    SLA — un model_id hardcodeado rompe Fase 3 cuando NVIDIA jubile el modelo.
+  * JSON forzado por PROMPT + parse/validate/retry, NO por extensión propietaria de
+    NVIDIA (nvext/guided). La extensión rompería la portabilidad a Groq y mataría el
+    cliente swappable. El wrapper de validación se quería igual (sin SLA).
+  * Modelo síncrono a propósito: los modelos grandes del catálogo usan patrón async
+    (202 + status-polling); llama-3.3-70b-instruct es POST directo. Elegir un async
+    es trabajo extra consciente, no default.
+  * Retry con backoff en 429 (throttling por tráfico compartido, sin SLA).
+- Groq + Llama 3.3 70B queda como FALLBACK documentado, mismo cliente OpenAI-compat.
+- Reactivar/conmutar a Groq SI: las corridas empiezan a dar 402/403 por créditos
+  agotados, o el throttling de NIM hace inviable el batch. Es cambio de config, sin
+  reescritura.
+  
 ### Iconos "ⓘ más información" contextuales en la UI (2026-06-18)
 - Idea de Jota al recortar el aviso de "artículo sin clúster" en /buscar: el texto
   largo invadía el UI de entrada. Se recortó a una frase. La idea futura es añadir

@@ -1,11 +1,14 @@
 # TRAMA — Documento Maestro de Arquitectura
 ### Rastreador de noticias colombianas: origen, divergencia y técnicas de persuasión
 
-> **Versión 2.0 — 13 junio 2026 — Autor: Jota (con Claudio)**
+> **Versión 2.1 — enmendado 2026-06-21 (base v2.0, 13 junio 2026) — Autor: Jota (con Claudio)**
 > Fuente de verdad del proyecto. Toda sesión empieza aquí + TRASPASO.md + BITACORA.md.
-> v2.0 actualiza: estado real de Fase 1 (completa/desplegada), medios nuevos
+> v2.0 actualizó: estado real de Fase 1 (completa/desplegada), medios nuevos
 > (RTVC, La Silla Vacía), decisiones de calidad de datos, y hallazgos que cambian
 > el plan (articleBody, grafo de historias relacionadas).
+> v2.1 enmienda: decisión LLM Fase 3 (NVIDIA NIM, §2/§5), migración 9 (§3),
+> desacople título-display↔ancla (§6). El estado volátil (números, banco) vive en
+> TRASPASO.md, no aquí.
 
 ---
 
@@ -44,7 +47,7 @@ hecho lado a lado, qué omitió cada medio y qué técnica usó. Decido con evid
 | Crawler | Python + httpx + trafilatura | corre en GitHub Actions cada 6h |
 | Base de datos | Supabase (Postgres + pgvector) | región São Paulo |
 | Embeddings | sentence-transformers multilingüe | Fase 2, local, gratis |
-| Análisis IA | Groq + Llama 3.3 | Fase 3, gratis |
+| Análisis IA | NVIDIA NIM (API hosted) — Llama 3.3 70B | Fase 3, gratis; OpenAI-compat; Groq fallback |
 | Frontend | Next.js 14 (App Router) en Vercel | Server Components, solo lectura |
 | Inmutabilidad | hashes SHA-256 + log append-only | Polygon opcional Fase 4 |
 | Jobs | GitHub Actions cron | gratis |
@@ -81,7 +84,9 @@ Migraciones aplicadas (en supabase/migrations/):
 7. fase2_clustering (agrega entidades jsonb + embedding vector(384) a articles;
    su create de stories/story_articles quedó inerte por IF NOT EXISTS — ver
    BITACORA) · 8. corregir_esquema_stories (recrea stories/story_articles con
-   esquema correcto, uuid, scores y anclas).
+   esquema correcto, uuid, scores y anclas) · 9. rls_lectura_stories (policy de
+   SELECT público para stories/story_articles; nacieron con RLS activo pero sin
+   policy → la web veía cero filas en silencio. Ver BITACORA 2026-06-17).
 
 ---
 
@@ -137,6 +142,11 @@ Prompt en español, temperatura baja, escéptico, cita evidencia textual o no
 reporta. Calibrar conservador: un falso positivo de "manipulación" cuesta más
 credibilidad que diez falsos negativos.
 
+Implementación (decidido 2026-06-19): proveedor NVIDIA NIM, modelo
+meta/llama-3.3-70b-instruct, detrás de cliente swappable (base_url+api_key+model_id
+en config). JSON estricto se fuerza por prompt + validación/retry, NO por extensión
+propietaria (preserva portabilidad a Groq, el fallback). Detalle y porqué en BITACORA.
+
 ---
 
 ## 6. Clustering (Fase 2 — el corazón intelectual)
@@ -165,15 +175,15 @@ se adjuntan como "reacciones" (no se comparan contra noticias en omisiones). Sol
 clústeres de 2+ artículos y 2+ medios distintos (un solo medio no es cobertura
 cruzada).
 
-**Estado (2026-06-16): motor construido y VALIDADO.** Corrió sobre 587 artículos
+**Estado (hito 2026-06-16): motor construido y VALIDADO.** Corrió sobre 587 artículos
 (2.5 días) → 20 clústeres, todos limpios a ojo. Los grandes (18 = captura alias
 Chalá; 13 = muerte Niño Guerrero) son un solo hecho cada uno; la campaña electoral
-quedó correctamente fragmentada en clústeres distintos, no desbordada. Los umbrales
-SIGUEN siendo provisionales en el sentido de que la muestra estuvo dominada por un
-macro-tema (elección); re-verificar la frontera cuando haya semanas de volumen y
-varios temas grandes simultáneos. La METODOLOGÍA (dos compuertas en AND) es lo
-robusto; los números exactos se recalibran corriendo de nuevo los scripts de
-diagnóstico de pares.
+quedó correctamente fragmentada en clústeres distintos, no desbordada. (Números
+ACTUALES en TRASPASO — no este hito histórico.) Los umbrales SIGUEN siendo
+provisionales en el sentido de que la muestra estuvo dominada por un macro-tema
+(elección); re-verificar la frontera cuando haya semanas de volumen y varios temas
+grandes simultáneos. La METODOLOGÍA (dos compuertas en AND) es lo robusto; los
+números exactos se recalibran corriendo de nuevo los scripts de diagnóstico de pares.
 
 **Decisiones cerradas con datos (2026-06-16):**
 - Umbrales: peso IDF ≥20 AND coseno ≥0.70 (antes: hipótesis 0.62 sin calibrar).
@@ -182,12 +192,6 @@ diagnóstico de pares.
   separan hecho de tema sin ayuda del tiempo.
 - Regla de "sección compatible": no se implementó; las dos compuertas bastaron.
   Queda como parámetro opcional si una recalibración futura la necesita.
-
-**Decisiones aún abiertas (Fase 2):**
-- Clústeres de tamaño 1: 505 de 587 noticias quedaron sin clúster (hechos de un
-  solo medio). ¿Son historia o no hasta tener 2+ medios? Sin decidir.
-- Zona dudosa → cola de revisión manual: no implementada aún (las compuertas
-  dieron corte limpio en la muestra; reevaluar si aparece zona gris con volumen).
 
 **Scores requeridos por el algoritmo para la UI (contrato backend→frontend):**
 Cada artículo dentro de un clúster necesita tres scores calculados por el pipeline:
@@ -198,9 +202,35 @@ Cada artículo dentro de un clúster necesita tres scores calculados por el pipe
    clústeres de distinto tamaño — ver deuda en BITACORA.
 3. `score_divergencia` — distancia al artículo más similar del clúster (qué tan
    distinto es del consenso).
-Las dos cards ancla son: la de mayor (score_neutralidad×score_cobertura) y la de
-mayor score_divergencia. Estos scores se guardan en `story_articles` (migración
-000008).
+Las dos cards ancla se eligen así (criterio actualizado 2026-06-18):
+- **Ancla principal:** entre los artículos que superan un piso de neutralidad
+  (percentil 75 de score_neutralidad DENTRO del clúster), la de mayor
+  score_cobertura. Razón: multiplicar neutralidad×cobertura fallaba en clústeres
+  grandes —neutralidad es casi constante y cobertura de alta varianza, así que el
+  producto ordenaba de facto por cobertura y dejaba anclar reacciones
+  editorializadas (medido, caso Chalá 2026-06-17). El gate separa "¿es central?"
+  de "¿es completo?". Umbral p75 PROVISIONAL, recalibrar con volumen.
+- **Ancla secundaria:** la de mayor score_divergencia (sin cambios). Puede NO pasar
+  el piso de neutralidad: por diseño, la card divergente representa la versión más
+  distinta del consenso, no la más neutral.
+
+- **Limitación conocida (titular-cita):** el gate de anclas NO atrapa titulares-cita
+  de actor político con alta neutralidad+cobertura — el embedding las ve centrales.
+  El SCORING / es_ancla sigue SIN tocar (una cita puede ser legítimamente el ancla de
+  las cards). Lo que SÍ se resolvió (2026-06-21) es el TÍTULO DE DISPLAY del feed —
+  ver bloque siguiente. Ojo: no son lo mismo. Detalle en BITACORA.
+
+- **Título de display vs ancla (desacople, 2026-06-21):** el NOMBRE de la historia
+  en el feed NO es el titular del ancla. Se calcula aparte (tituloCanonico,
+  lib/colapsarCluster.js): el titular noticia más neutral que NO sea cita
+  declarativa. Razón: el ancla es load-bearing (qué artículo representa el clúster en
+  las cards); el título es presentación (cómo se nombra el hecho). Un titular-cita
+  puede ser legítimamente el ancla por embedding, pero es mal nombre del hecho —
+  adopta el encuadre del actor, que es lo que Trama señala, no narra. La heurística
+  de cita (cláusula entre comillas adyacente a dos puntos) vive solo en presentación:
+  un falso positivo da un título subóptimo (cosmético, reversible), nunca corrompe
+  scores ni anclas. Residual conocido: clústeres cuyas noticias son TODAS cita (1/48
+  hoy) caen a la más neutral. Detalle en BITACORA.
 
 ### ⭐ Evolución del modelo: grafo de historias relacionadas (idea de Jota)
 Más allá de clústeres aislados: artículos que NO son la misma noticia pero están
@@ -236,6 +266,7 @@ concepto) · Source Serif 4 (cuerpo) · IBM Plex Mono (hashes, timestamps, foren
 partido). El Tiempo azul, El Espectador verdeazul, Vorágine violeta, Las2orillas
 ocre, El Colombiano marrón. Rojo/ámbar/verde reservados para hilo/resaltador/
 verificado. Etiquetas con relleno sólido + texto papel para contraste.
+(Pendiente: alinear estos valores con los tokens reales de globals.css — ver TRASPASO.)
 
 **Elemento firma:** el hilo rojo — conecta versiones de un mismo hecho ordenadas
 por hora, estilo tablero de investigación. Hoy es decorativo (lista cronológica);
@@ -262,8 +293,9 @@ placeholder Fase 2, LLM en Fase 3.
 
 ### ✅ FASE 1 — El archivo funciona (COMPLETA Y DESPLEGADA)
 Crawler de 5 medios + snapshots con hash + clasificador de tipo + sección + web
-pública de solo lectura (registro, expediente, perfil de medio). En observación
-de 7 días (criterio: ≥150 artículos, 5 medios, cero duplicados, tipos ≥80%).
+pública de solo lectura (registro, expediente, perfil de medio). Gate de
+observación de 7 días (≥150 artículos, 5 medios, cero duplicados, tipos ≥80%):
+superado.
 
 ### ⏳ ANTES DE FASE 2 
 ### Extracción de cuerpo por bucket (desde 2026-06-14)
@@ -284,7 +316,7 @@ Entidades + embeddings + clustering + vista del hilo rojo. Integrar Colombia+20 
 La Silla Vacía DESPUÉS de validar el clustering con los 5 actuales.
 
 ### FASE 3 — El análisis de persuasión
-Pipeline Groq por clúster (≥3 medios), resaltador ámbar, resumen neutral, perfiles
+Pipeline NVIDIA NIM por clúster (≥3 medios), resaltador ámbar, resumen neutral, perfiles
 de medios (sobre columnas ya reservadas; cada dato con fuente citable). Integrar
 Semana, Caracol/W Radio, RTVC.
 
@@ -308,5 +340,5 @@ gobernanza mínima contra captura coordinada, anclaje opcional en Polygon.
 
 ---
 
-*Siguiente sesión: en el Proyecto Trama, con TRASPASO.md cargado. Primer movimiento
-recomendado: diagnóstico de articleBody en los 5 medios, luego Fase 2.*
+*Siguiente sesión: en el Proyecto Trama, con TRASPASO.md cargado. Estado volátil y
+próximo paso viven en TRASPASO, no aquí.*

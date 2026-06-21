@@ -76,17 +76,32 @@ export function colapsarCluster(capturas) {
   return articulos;
 }
 
+// Detecta titular-cita: cláusula entre comillas adyacente a ":" — el patrón
+// «"cita": Actor» o «Actor afirmó: "cita"». NO usa verbo de habla suelto (eso
+// sobre-disparaba con alias entre comillas, p.ej. 'Walter Mendoza'). Medido
+// sobre el banco: 4/4 citas reales, 0 falsos positivos.
+const RE_CITA_DELANTE = /^\s*["«“'‘].{15,}?["»”'’]\s*:/;
+const RE_CITA_ATRAS   = /:\s*["«“'‘].{15,}/;
+
+export function esTituloCita(titulo) {
+  const t = (titulo || "").trim();
+  return RE_CITA_DELANTE.test(t) || RE_CITA_ATRAS.test(t);
+}
+
 /**
- * Título canónico del clúster: el del artículo noticia con mayor
- * score_neutralidad. Más confiable que stories.titulo, que puede
- * haberse guardado editorializado (ver decisión §3 del handoff).
+ * Título canónico del clúster: el titular noticia más neutral que NO sea cita
+ * declarativa. Un titular-cita adopta el encuadre del actor como nombre del
+ * hecho — lo que Trama señala, no lo que narra. Si TODAS las noticias son cita,
+ * cae al de mayor neutralidad (degradación elegante: no inventa títulos).
  * @param {ReturnType<typeof colapsarCluster>} articulos
  * @param {string} fallback
  */
 export function tituloCanonico(articulos, fallback = "Historia sin título") {
   const noticias = articulos.filter(a => a.tipo === "noticia");
   if (!noticias.length) return fallback;
-  return noticias.reduce((max, a) =>
+  const noCita = noticias.filter(a => !esTituloCita(a.titulo));
+  const pool = noCita.length ? noCita : noticias;
+  return pool.reduce((max, a) =>
     a.score_neutralidad > max.score_neutralidad ? a : max
   ).titulo;
 }
