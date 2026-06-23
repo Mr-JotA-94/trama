@@ -6,9 +6,16 @@
 # datacenter y algunos medios podrían bloquearlas (ya vimos 403 desde el
 # entorno de Anthropic). La primera corrida manual nos dirá la verdad.
 #
-# Tras crawl corre backfill (entidades + embedding) encadenado vía needs.
-# backfill es idempotente (WHERE embedding IS NULL): si falla, se re-corre solo
-# en la siguiente vuelta sin daño. NO toca stories ni contenido/hash.
+# Cadena de tres jobs encadenados vía needs: crawl → backfill → clustering.
+#  - crawl: ingesta de los 5 medios.
+#  - backfill: entidades + embedding. Idempotente (WHERE embedding IS NULL): si
+#    falla, se re-corre solo en la siguiente vuelta sin daño. NO toca stories ni
+#    contenido/hash.
+#  - clustering: recompute total de stories (caché derivada pura). Necesita que
+#    backfill haya corrido para que las noticias nuevas tengan embedding y entren
+#    al clúster. Si backfill falla, no corre (no hay embeddings nuevos que agrupar;
+#    el banco viejo espera sin daño). Recompute completo ~2 min, dominado por I/O
+#    a Supabase, no por cómputo (el O(n²) es instantáneo a esta escala).
 name: crawler
 on:
   schedule:
@@ -35,7 +42,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python crawler.py
-
   backfill:
     needs: crawl            # solo si la ingesta tuvo éxito; si no, no hay nada nuevo que embeber
     runs-on: ubuntu-latest
@@ -68,3 +74,22 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python backfill_fase2.py
+  clustering:
+    needs: backfill         # necesita embeddings frescos; si backfill falla, no hay nada nuevo que agrupar
+    runs-on: ubuntu-latest
+    timeout-minutes: 10     # corrida sana ~2 min (I/O a Supabase); 10 = margen para atrapar cuelgues reales
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias (ligeras — clustering NO usa torch/spaCy, solo lee embeddings y hace coseno en numpy)
+        run: pip install numpy supabase python-dotenv
+      - name: Reclusterizar (recompute total — stories es caché derivada pura, se borra y reconstruye)
+        working-directory: crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python clustering_fase2.py
