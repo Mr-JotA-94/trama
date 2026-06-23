@@ -45,6 +45,21 @@ def _parse_embedding(v):
         return json.loads(v)        # '[0.1,-0.2,...]' -> [0.1, -0.2, ...]
     return v                        # ya es lista (algún driver lo hace)
 
+def colapsar_por_url(articulos):
+    """Colapsa capturas a artículos únicos. El átomo de Trama es la url, no la
+    captura: una nota editada genera filas nuevas (hash distinto, inmutabilidad),
+    pero es UN artículo. Representante = última captura (estado actual de la nota),
+    coherente con colapsarCluster.js del frontend. Colapsar AQUÍ —antes de IDF,
+    aristas y scores— hace que TODO el pipeline opere sobre el átomo correcto sin
+    tocar nada más: el conteo, el centroide y las compuertas heredan urls únicos.
+    Una nota muy editada ya no pesa Nx en el centroide ni infla n_articulos."""
+    por_url = {}
+    for a in articulos:
+        u = a["url"]
+        if u not in por_url or a["fecha_captura"] > por_url[u]["fecha_captura"]:
+            por_url[u] = a
+    return list(por_url.values())
+
 def cargar_articulos():
     """Trae artículos con embedding y entidades. Pagina para no reventar RAM."""
     filas, desde = [], 0
@@ -61,6 +76,7 @@ def cargar_articulos():
     # Normalizar embeddings de string a lista UNA vez, al cargar.
     for a in filas:
         a["embedding"] = np.asarray(_parse_embedding(a["embedding"]), dtype=np.float32)
+    filas = colapsar_por_url(filas) 
     return filas
 
 def cuando(a):
