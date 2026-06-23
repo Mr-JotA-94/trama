@@ -5,36 +5,66 @@
 # que usaremos como prueba de fuego: los runners de Actions tienen IPs de
 # datacenter y algunos medios podrían bloquearlas (ya vimos 403 desde el
 # entorno de Anthropic). La primera corrida manual nos dirá la verdad.
-
+#
+# Tras crawl corre backfill (entidades + embedding) encadenado vía needs.
+# backfill es idempotente (WHERE embedding IS NULL): si falla, se re-corre solo
+# en la siguiente vuelta sin daño. NO toca stories ni contenido/hash.
 name: crawler
-
 on:
   schedule:
     # Cada 6 horas (UTC). Colombia es UTC-5: corre ~01:00, 07:00, 13:00, 19:00 hora CO.
     - cron: "0 0,6,12,18 * * *"
   workflow_dispatch: {}   # botón "Run workflow" para corridas manuales
-
 jobs:
   crawl:
     runs-on: ubuntu-latest
     timeout-minutes: 30   # red de seguridad: si algo se cuelga, lo mata
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-
       - name: Python 3.12
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"   # fijamos 3.12 (probaste local en 3.14; 3.12 es la estable para CI)
-
       - name: Instalar dependencias
         working-directory: crawler
         run: pip install -r requirements.txt
-
       - name: Correr crawler
         working-directory: crawler
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python crawler.py
+
+  backfill:
+    needs: crawl            # solo si la ingesta tuvo éxito; si no, no hay nada nuevo que embeber
+    runs-on: ubuntu-latest
+    timeout-minutes: 20     # 1ª corrida fría ~5-8 min (descargas); con caché, tibia ~2-3 min
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: crawler/requirements-backfill.txt
+      - name: Caché modelo HuggingFace (sentence-transformers)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          # Clave estática: el modelo (MiniLM-L12-v2) está hardcodeado en backfill_fase2.py
+          # y no cambia. Si algún día cambias el modelo en el .py, sube el sufijo (v2, v3...).
+          key: hf-${{ runner.os }}-minilm-l12-v2
+      - name: Instalar torch CPU-only
+        # Sin esto pip trae el build CUDA (~2GB) en un runner sin GPU. CPU basta y cachea.
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Instalar dependencias backfill
+        working-directory: crawler
+        run: pip install -r requirements-backfill.txt
+      - name: Correr backfill
+        working-directory: crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python backfill_fase2.py

@@ -12,6 +12,7 @@
 
 import os
 import math
+import uuid
 from collections import defaultdict
 from datetime import datetime
 
@@ -29,6 +30,11 @@ UMBRAL_COSENO = 0.70    # similitud mínima (mismo hecho, no solo mismo tema)
 VENTANA_HORAS = 72      # filtro grueso de candidatos
 SOLO_NOTICIAS = True    # solo 'noticia' forma clúster núcleo (§6). Opinión = reacción.
 
+# Namespace fijo para uuid5 de stories. NUNCA cambiar: define la identidad
+# de TODAS las historias. Si cambia, todos los enlaces /historia/[id] se
+# rompen de golpe. Generado una vez (2026-06-21), constante para siempre.
+NAMESPACE_STORIES = uuid.UUID("6f3a1c2e-7b4d-5a9e-8c1f-2d3e4f5a6b7c")
+
 # ---------------------------------------------------------------------
 # Carga
 # ---------------------------------------------------------------------
@@ -44,7 +50,7 @@ def cargar_articulos():
     filas, desde = [], 0
     while True:
         q = (sb.table("articles")
-             .select("id, outlet_id, titulo, tipo, fecha_publicacion, fecha_captura, entidades, embedding")
+             .select("id, outlet_id, url, titulo, tipo, fecha_publicacion, fecha_captura, entidades, embedding")
              .not_.is_("embedding", "null")
              .range(desde, desde + 999)
              .execute().data)
@@ -60,6 +66,16 @@ def cargar_articulos():
 def cuando(a):
     f = a["fecha_publicacion"] or a["fecha_captura"]
     return datetime.fromisoformat(f.replace("Z", "+00:00"))
+
+def uuid_estable(ids, por_id):
+    """UUID determinista de un clúster: uuid5 sembrado en la url del
+    artículo más antiguo. Determinismo total: desempata por url cuando dos
+    artículos comparten fecha (sin esto, el 'más antiguo' lo decidiría el
+    orden de iteración → uuid inestable). El url es permanente (nunca se
+    borra), así que mientras el artículo más antiguo siga en el clúster, el
+    id no cambia entre corridas."""
+    semilla = min(ids, key=lambda i: (cuando(por_id[i]), por_id[i]["url"]))
+    return str(uuid.uuid5(NAMESPACE_STORIES, por_id[semilla]["url"]))
 
 def normaliza_ents(lista):
     """Set de entidades en minúsculas para comparar."""
@@ -218,7 +234,9 @@ def reescribir_stories(clusteres, por_id, idf):
         scores, anclas, ancla_principal = calcular_scores(ids, por_id, idf)
         fechas = [cuando(por_id[i]) for i in ids]
 
+        sid = uuid_estable(ids, por_id)
         story = sb.table("stories").insert({
+            "id": sid,
             "titulo": por_id[ancla_principal]["titulo"],
             "fecha_inicio": min(fechas).isoformat(),
             "fecha_fin": max(fechas).isoformat(),
