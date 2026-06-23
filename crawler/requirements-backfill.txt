@@ -1,5 +1,6 @@
 python-dotenv
 supabase
+click
 spacy==3.8.7
 sentence-transformers==3.4.1
 es-core-news-md @ https://github.com/explosion/spacy-models/releases/download/es_core_news_md-3.8.0/es_core_news_md-3.8.0-py3-none-any.whl
