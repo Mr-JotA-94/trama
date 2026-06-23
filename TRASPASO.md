@@ -38,6 +38,7 @@ periodistas, verificadores, ciudadanos activos.
   Vercel → trama-co.vercel.app. CSS global en globals.css (tokens en :root).
   Caché: feed revalidate 300s, artículos 3600s (la base se actualiza al instante;
   la web puede tardar ~5min o requerir hard refresh; para validar, usar query).
+  NOTA: /historias se renderiza dinámicamente por request (usa searchParams).
 - **Repo:** GitHub JotaLabs/trama (privado, monorepo). /crawler, /web, /supabase/migrations.
 - **Migraciones:** van 9. Última: 20260617000009_rls_lectura_stories.
 
@@ -45,37 +46,46 @@ periodistas, verificadores, ciudadanos activos.
 
 **Fase 1 COMPLETA y desplegada.** Crawler solo, web pública, 5 medios.
 
-**Fase 2 EN PRODUCCIÓN (vista + clustering).** Vive en trama-co.vercel.app/historias
-y /historia/[id].
+**Fase 2 EN PRODUCCIÓN (vista + clustering + feed paginado).** Vive en
+trama-co.vercel.app/historias y /historia/[id].
 
-**Banco de artículos vs banco clusterizado SE SEPARARON (medido 2026-06-21):**
-- **Artículos en BD: 1645** (re-medido 06-21). El crawler corre solo cada 6h y sumó
-  ~663 desde el 06-18.
-- **Último clustering: corrió sobre 982 → 48 clústeres / 178 noticias.** Los ~663
-  nuevos NO están clusterizados y muchos aún sin embedding (backfill manual pendiente).
-- **Implicación:** correr backfill+clustering ahora incorpora los 663 PERO regenera
-  TODOS los uuids de stories (delete+insert) → rompe enlaces existentes. Es la deuda
-  UUID-estable hecha tensión real. Decidir UUID estable ANTES, o aceptar el churn.
+**Banco al día (medido 2026-06-21, tras backfill + reclustering):**
+- **Artículos en BD: 1645**, TODOS con embedding (los 663 pendientes se backfillearon).
+- **Clustering vigente: 83 clústeres / 329 noticias clusterizadas** (sobre 1496
+  noticias núcleo; 458 aristas pasan las dos compuertas). El banco YA es multitema:
+  dejó de estar dominado por 2-3 macro-temas (Chalá/Niño Guerrero/electoral). Es la
+  primera corrida sobre la que tiene sentido recalibrar umbrales con volumen diverso.
 
 **Clustering: dos compuertas AND** — peso IDF de entidades compartidas ≥20 Y coseno
 ≥0.70. 3 scores por artículo (neutralidad, cobertura, divergencia) en story_articles.
-Umbrales provisionales (re-verificar con semanas de volumen multitema; el banco sigue
-dominado por pocos macro-temas Chalá/Niño Guerrero/electoral).
+Umbrales provisionales (recalibrar ahora que hay volumen multitema; antes bloqueado
+por falta de diversidad temática, ese bloqueo ya NO aplica).
+
+**UUID ESTABLE DE STORIES — RESUELTO Y VALIDADO (2026-06-21).** stories.id ya NO es
+aleatorio: es uuid5 determinista sembrado en la url del artículo más antiguo del
+clúster (NAMESPACE_STORIES constante en clustering_fase2.py). Validado: dos corridas
+consecutivas sobre los mismos datos dan los 83 uuids IDÉNTICOS. Enlaces /historia/[id]
+sobreviven cada corrida mientras el artículo más antiguo siga en el clúster. Residual
+conocido (fusión / re-semilla) documentado en BITACORA. Esto DESBLOQUEA la
+automatización del pipeline.
 
 **ARREGLO DEL ANCLA — vigente (2026-06-18).** Ancla principal = piso p75 de
 neutralidad del clúster + desempate por cobertura. Ancla secundaria = mayor
-divergencia. Validado: Chalá ancla "Legalizan captura" (id 0b869f42), no la reacción
-del Alcalde. Ver BITACORA.
+divergencia. Ver BITACORA.
 
-**FEED↔ANCLA RESUELTO (2026-06-21).** El feed NO lee stories.titulo: usa
-`tituloCanonico` (lib/colapsarCluster.js). Antes elegía el titular noticia de máxima
-neutralidad PURA — la fórmula que el arreglo del ancla descartó → el arreglo era
-invisible en el feed. Causa estructural: el título de display se computa en TRES
-lugares (es_ancla backend = gate p75; stories.titulo = hereda del ancla;
-tituloCanonico frontend). Fix aplicado: tituloCanonico ahora descarta titulares-cita
-declarativos. Tier 2, presentación, NO toca scoring ni es_ancla. Validado sobre los
-48: 3 títulos saneados (Petro b56729d8, Gaona 974f9571, Medicina Legal 3ce9745f), 0
-falsos positivos, 1 residual aceptado (Germán 656a7e6c, sin alternativa no-cita).
+**FEED↔ANCLA / TÍTULO-CITA — vigente (2026-06-21).** El feed usa tituloCanonico
+(lib/colapsarCluster.js): titular noticia más neutral que NO sea cita declarativa.
+NOTA para no asustarse: un query crudo de stories.titulo muestra titulares-cita
+(Petro 8d909996, Gaona 06c71072, Germán 1f9fd820, etc.) — eso es el valor de BD, NO
+lo que el feed renderiza. El feed los sanea en presentación. No es regresión.
+
+**FEED PAGINADO + ORDENABLE — EN PRODUCCIÓN (2026-06-21).** /historias ya no muestra
+30 fijos: pagina de a 20 (≈5 páginas para 83) vía searchParams + .range(). Orden por
+3 atributos (Más reciente=fecha_fin desc [default], Más medios=n_medios desc, Más
+cobertura=n_articulos desc), todos con desempate determinista. URLs compartibles
+(/historias?sort=medios&page=2). created_at se quitó como orden (era ruido de
+inserción: 63s de rango para los 83). La rama CON búsqueda aplica orden pero NO
+pagina (deuda acotada, no muerde con 83 stories).
 
 ### Decisiones de la vista (cerradas, encarnadas en el código)
 - **Átomo = `url`**, no el medio ni la captura. Colapsar capturas del mismo url.
@@ -84,46 +94,47 @@ falsos positivos, 1 residual aceptado (Germán 656a7e6c, sin alternativa no-cita
 - es_ancla = OR de capturas (contrato del pipeline, no se recalcula en la vista).
 - Hilo: un nodo por artículo (url), coloreado por medio, ordenado por primera captura.
 - **Título del feed = titular noticia más neutral que NO sea cita declarativa**
-  (tituloCanonico). Independiente de es_ancla por diseño (desacople presentación↔
-  scoring). Si todas las noticias son cita, cae a la más neutral; si no hay noticias,
-  cae a stories.titulo.
+  (tituloCanonico). Independiente de es_ancla por diseño.
+- **Orden del feed = fecha_fin desc por default**, con desempate determinista.
+- **Identidad del clúster = uuid5(NAMESPACE_STORIES, url del más antiguo)**, no aleatoria.
 
 ## PRÓXIMO PASO cuando retomemos
-1. **UUID estable / identidad de stories (RECOMENDADO).** reescribir_stories hace
-   delete+insert → uuid nuevo cada corrida → todo enlace /historia/[uuid] compartido
-   se rompe. Es PREREQUISITO de automatizar clustering y de incorporar los 663 nuevos
-   sin romper enlaces. NO es optimización de cuota — es identidad + escala. Opciones
-   en BITACORA.
-2. **Incorporar los 663 nuevos (backfill + clustering).** Bloqueado de facto por #1:
-   correrlo hoy regenera uuids. Si se acepta el churn (aún sin enlaces compartidos en
-   producción), se puede correr antes; si ya importa la estabilidad, va después de #1.
-3. **Feed pagination + justicia de frecuencia de medios.** El feed muestra 30 de 48
-   (limit(30) en page.js, orden created_at desc) → esconde clústeres grandes (Chalá
-   19-art quedó fuera). Combina con la deuda "feed plano silencia medios de baja
-   frecuencia". Acotado y visible.
-4. **Acumular volumen MULTITEMA** (pasivo). Prerequisito de tocar umbrales /
-   automatización / grafo. Ya hay volumen nuevo (663) pendiente de procesar.
-5. **Deuda doble-cómputo de título** (ver BITACORA): título se calcula en backend
-   (stories.titulo) y frontend (tituloCanonico) con criterios que hoy coinciden de
-   facto pero se desincronizan si cambia el criterio de ancla. ¿Fuente única algún
-   día? No urgente.
+1. **Automatizar backfill (RECOMENDADO).** backfill_fase2.py es idempotente
+   (WHERE embedding IS NULL), solo agrega entidades/embedding, NO toca stories ni
+   contenido/hash. Es la parte CARA (spaCy + sentence-transformers). Automatizarlo es
+   seguro e independiente. Decidir runner: ¿GitHub Actions aparte del crawler, o paso
+   encadenado tras el crawler? Ojo modelos pesados en Actions (tiempo/caché de deps).
+2. **Automatizar clustering (DESBLOQUEADO por UUID estable, va DESPUÉS de #1).** Ya
+   no rompe enlaces. Decidir frecuencia (¿tras cada backfill? ¿diario?) y si recalibrar
+   umbrales ANTES de automatizar, para no fosilizar provisionales (ver #3).
+3. **Recalibrar umbrales con volumen multitema (AHORA es posible).** El bloqueo
+   "banco dominado por pocos macro-temas" se levantó: 83 clústeres multitema. Re-juzgar
+   IDF≥20 / coseno≥0.70 / p75 sobre los clústeres chicos (2-3 art), donde un umbral
+   flojo mete falsos positivos. Hacerlo ANTES de automatizar clustering (cada recompute
+   total es la oportunidad de re-calibrar; automatizar sin recalibrar congela los
+   provisionales).
+4. **Feed pagination en rama CON búsqueda** (deuda menor): hoy la búsqueda no pagina.
+   No urge con 83 stories. Combinar con "feed plano silencia medios de baja frecuencia"
+   si se aborda.
+5. **Doble-cómputo de título** (backend stories.titulo vs frontend tituloCanonico):
+   coinciden de facto, se desincronizan si cambia el criterio de ancla. No urgente.
 6. Limpieza pendiente: duplicados de capitalización en raíz (Cierre/CIERRE,
    Arquitectura/ARQUITECTURA); alinear tintas de ARQUITECTURA §7 con globals.css.
-7. **Fase 2 avanzada (grafo de historias relacionadas): PREMATURO.** Depende de
-   umbrales a recalibrar y de identidad estable que aún no existe.
-8. Fase 3 más adelante.
+7. **Fase 2 avanzada (grafo de historias relacionadas).** Ahora menos prematuro:
+   identidad estable ya existe. Sigue dependiendo de umbrales recalibrados (#3) y de
+   tabla story_relations (no existe).
+8. Fase 3 más adelante (LLM decidido: NVIDIA NIM).
 
 ## Deudas activas (detalle en BITACORA)
-- **UUID de stories no estable** (2026-06-21) — enlaces se rompen cada corrida.
-  Prerequisito de automatización e incorporación de nuevos artículos.
-- **Banco clusterizado desfasado** (2026-06-21) — 1645 en BD, 48 clústeres sobre 982.
-  ~663 sin procesar.
+- **UUID de stories no estable** — RESUELTO 2026-06-21 (uuid5 determinista). Residual
+  de fusión/re-semilla documentado, con disparador. Ver BITACORA.
+- **Umbrales provisionales sin recalibrar con multitema** (2026-06-21) — el bloqueo se
+  levantó (banco multitema); recalibrar es ahora trabajo posible, no bloqueado.
+- **Búsqueda no paginada** (2026-06-21) — rama q3 sin .limit()/.range(). No muerde a 83.
 - **Doble-cómputo de título** (2026-06-21) — backend vs frontend, hoy coinciden de facto.
-- **Titular-cita ancla clústeres** — MITIGADA en display 2026-06-21 (tituloCanonico
-  filtra citas; residual 1/48 Germán). El scoring/es_ancla NO se tocó. Ver BITACORA.
-- **Ancla por cobertura elige mal** — RESUELTA 2026-06-18 (gate p75). Ver BITACORA.
+- **Titular-cita ancla clústeres** — MITIGADA en display (tituloCanonico). Scoring NO tocado.
+- **Ancla por cobertura elige mal** — RESUELTA 2026-06-18 (gate p75).
 - **Lookup por URL best-effort** — falla silencioso con variantes AMP/m./canónicas.
-  Mitigado con 4 variantes www×slash.
 
 ## Fase 2 NO obliga a reconstruir al agregar medios
 El clustering opera sobre artículos. Agregar medio = config en outlets; solo se
@@ -132,17 +143,16 @@ y RTVC (feeds verificados, no activados), Colombia+20, Semana, Caracol/W Radio.
 
 LLM de Fase 3 DECIDIDO (2026-06-19): NVIDIA NIM hosted, meta/llama-3.3-70b-instruct,
 cliente swappable, Groq fallback. Detalle en ARQUITECTURA §2/§5 y BITACORA. No
-re-evaluar sin motivo nuevo. NOTA: descartado generar títulos de historia por LLM
-(rompe inmutabilidad, no-determinista, adelanta Fase 3) — ver BITACORA 2026-06-21.
+re-evaluar sin motivo nuevo. NOTA: descartado generar títulos de historia por LLM.
 
 ## Cómo verificar el estado
 - Web vista de Fase 2: trama-co.vercel.app/historias y /historia/[id] (producción).
   Local: cd web && npm run dev → localhost:3000.
-- Clustering: stories/story_articles tienen filas (48 clústeres del último run sobre 982).
-- Fix título-cita: diag_fix_titulos.py debe dar 3 cambios (Petro/Gaona/Medicina
-  Legal), 0 falsos positivos, residual = solo Germán 656a7e6c.
-- Ancla Chalá (testea el valor de BD, NO lo que muestra el feed): stories.titulo del
-  id 0b869f42 = "Última hora: Legalizan captura de alias 'Chalá'…". El feed muestra
-  tituloCanonico, que puede diferir.
+- Feed paginado: /historias muestra 20, default fecha_fin desc, ~5 páginas. Probar
+  /historias?sort=medios&page=2 (orden + página persisten en URL).
+- UUID estable (prueba decisiva): correr clustering 2× sin cambiar datos; el query
+  `select md5(string_agg(id::text, ',' order by id)) from stories;` debe dar la MISMA
+  huella en ambas corridas. uuids son v5 (5º grupo empieza con '5'), no v4.
+- Clustering: stories/story_articles tienen filas (83 clústeres del último run sobre 1645).
 - RLS: select * from pg_policies where tablename in ('stories','story_articles');
 - Crawler: pestaña Actions en verde.

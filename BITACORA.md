@@ -14,6 +14,18 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.
 
+- **2026-06-21** — backfill + reclustering de los 663 pendientes (NO es truncate).
+  Los ~663 artículos capturados por el crawler desde 06-18 tenían embedding NULL;
+  backfill los rellenó (entidades + embedding) vía UPDATE idempotente. Banco:
+  982 → 1645 artículos, todos embebidos. Tras esto, clustering reconstruyó
+  stories/story_articles (derivado, no archivo): 48 → 83 clústeres / 329 noticias.
+  contenido_visible y hash intactos. Inmutabilidad respetada.
+- **2026-06-21** — última regeneración de uuids de stories (NO es truncate de archivo).
+  Al implementar UUID estable, los 83 uuid aleatorios pasaron a su valor uuid5
+  determinista en una corrida. Churn final aceptado (sin enlaces compartidos en
+  producción aún). De aquí en adelante, estables. Solo afecta stories (caché derivada),
+  jamás articles.
+
 - **2026-06-18** — backfill de Fase 2 sobre artículos nuevos (NO es truncate).
   395 artículos nuevos (capturados por el crawler desde el último backfill) tenían
   embedding NULL; backfill los rellenó (entidades + embedding) vía UPDATE. Banco:
@@ -66,6 +78,49 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Deuda técnica conocida
+
+### UUID estable de stories — RESUELTO (2026-06-21)
+- **Contexto:** reescribir_stories hacía delete()+insert() dejando que Postgres
+  generara gen_random_uuid → uuid nuevo cada corrida → todo enlace /historia/[uuid]
+  compartido se rompía. Para una hemeroteca forense cuyo valor es "comparte este link
+  como prueba", era una herida en la propuesta. Era prerequisito de automatizar el
+  pipeline (automatizado, la rotura se multiplica a cada corrida).
+- **Decisión de diseño (challenge-first):** entre las 3 opciones registradas, se
+  eligió la #1 (semilla determinista) sobre la #2 (tabla story_identity persistente).
+  Criterio que decidió: la #2 reintroduce ESTADO (matching difuso entre corridas),
+  justo lo que se rechazó al descartar clustering incremental — convertiría stories de
+  caché derivada pura a estado. La #1 COMPUTA el id desde datos (no lo almacena-y-busca),
+  preservando stories como caché pura. Coherencia arquitectónica ya pagada.
+- **Implementación:** uuid5(NAMESPACE_STORIES, url_del_más_antiguo). Corrección de
+  granularidad sobre la idea original: se siembra del URL (átomo permanente de Trama),
+  NO del article_id (cambia con cada re-captura). Determinismo total: el "más antiguo"
+  se elige con min por (cuando(a), url) — el url como segundo criterio garantiza ganador
+  único ante empates de fecha (sin esto, lo decidía el orden de iteración de Python →
+  uuid inestable). NAMESPACE_STORIES es constante de módulo, NUNCA cambiar.
+- **Validado:** dos corridas consecutivas sobre datos idénticos → los 83 uuids
+  IDÉNTICOS (huella md5 del string_agg coincide). uuids son v5. Tier 2 load-bearing
+  (escribe stories), no toca articles/esquema/umbrales/scores. Sin migración.
+- **Residual aceptado (con disparador):** la #1 ata la identidad a UN artículo (el más
+  antiguo). Flaquea en 3 casos RAROS, no medidos aún en frecuencia:
+  (1) FUSIÓN: dos clústeres se unen; el más joven hereda el uuid del más viejo → su
+  enlace se rompe. (2) EL MÁS ANTIGUO ABANDONA el clúster (recalibración le quita
+  aristas): re-semilla con otro url → uuid nuevo (el caso más molesto). (3) SPLIT: la
+  pieza sin el url-semilla original toma uuid nuevo. La opción #2 (matching por
+  solapamiento) es robusta a los tres, pero pagar esa complejidad ahora es optimización
+  prematura contra frecuencias no medidas. La #1 ES el instrumento que permite MEDIR
+  esas frecuencias (con ids estables se observa qué historias persisten/fusionan entre
+  corridas) — medir-antes-de-arreglar al meta-nivel.
+- **Reactivar (escalar a opción #2) SI:** usuarios reportan enlaces rotos a historias
+  que sí existen, rastreado a fusión/re-semilla frecuente.
+
+  ### Búsqueda en /historias no paginada (2026-06-21)
+- **Síntoma:** al agregar paginación al feed, la rama CON búsqueda (q3 en page.js)
+  quedó SIN .limit()/.range() — devuelve todas las stories que matchean el texto. Hoy
+  con 83 stories totales no muerde. La paginación de esta unidad cubrió solo el feed
+  sin búsqueda (que era el problema del límite-30 reportado).
+- **Decisión:** NO arreglar ahora. Acotado y visible. La búsqueda sí recibió el mismo
+  orden (fecha_fin/n_medios/n_articulos) para no quedar con el created_at roto.
+- **Reactivar SI:** la búsqueda empieza a devolver decenas de stories de forma habitual.
 
 ### Fix título-cita en el feed (display) — APLICADO 2026-06-21
 - **Contexto:** la deuda titular-cita (2026-06-18) se volvió visible en producción
@@ -270,9 +325,6 @@ cambios de esquema se hacen con migraciones que preservan datos.
   palabras legítimas). Señal CREÍBLE del medidor: fuga_boilerplate=0% (limpieza
   sólida) y 'corto' (deuda real arriba). Las otras columnas, leer con pinza.
 
-
-
-
 ### Clasificador de tipo en Las2orillas y Vorágine (2026-06-12)
 - Ninguno usa /opinion/ en el path, así que si publican columnas de opinión las
   marcamos como 'noticia'. Bajo volumen, bajo impacto. Vigilar.
@@ -283,14 +335,11 @@ cambios de esquema se hacen con migraciones que preservan datos.
   representación.
 - **Fix candidato:** paginación, o feed que garantice presencia de todos los
   medios. Resolver en iteración de web.
-
-
-
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
-### Estabilidad de enlaces de historias (UUID estable) — prerequisito de automatización (2026-06-21)
+### [RESUELTO 2026-06-21 → ver Deuda técnica/"UUID estable de stories"] Estabilidad de enlaces de historias (UUID estable) — prerequisito de automatización (2026-06-21)
 - **Problema:** reescribir_stories (clustering_fase2.py) hace delete()+insert() de
   stories en cada corrida → uuid nuevo cada vez → todo enlace /historia/[uuid] que
   alguien comparta (redes, evidencia, cita) se ROMPE tras la siguiente corrida. Para

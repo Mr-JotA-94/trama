@@ -232,6 +232,18 @@ Las dos cards ancla se eligen así (criterio actualizado 2026-06-18):
   scores ni anclas. Residual conocido: clústeres cuyas noticias son TODAS cita (1/48
   hoy) caen a la más neutral. Detalle en BITACORA.
 
+  - **Identidad estable del clúster (uuid5 determinista, 2026-06-21):** stories.id NO
+  es aleatorio. Se computa como uuid5(NAMESPACE_STORIES, url del artículo más antiguo
+  del clúster). Razón: reescribir_stories hace delete()+insert() cada corrida; con id
+  aleatorio, todo enlace /historia/[id] compartido se rompía. Sembrar del url (átomo
+  permanente, no del article_id que cambia por re-captura) hace que el id sobreviva
+  entre corridas mientras el artículo más antiguo siga en el clúster. Preserva la
+  naturaleza de stories como CACHÉ DERIVADA PURA: el id se COMPUTA desde datos, no se
+  almacena-y-recupera (eso habría sido estado, la opción descartada). NAMESPACE_STORIES
+  es constante e inmutable: si cambia, toda la identidad se rompe. Limitación conocida:
+  fusión de clústeres y re-semilla (el más antiguo abandona) generan uuid nuevo — caso
+  raro, documentado en BITACORA con disparador para escalar a tabla de identidad.
+
 ### ⭐ Evolución del modelo: grafo de historias relacionadas (idea de Jota)
 Más allá de clústeres aislados: artículos que NO son la misma noticia pero están
 ligados (una nota y su derivada, un hecho y su reacción). Relación ENTRE clústeres,
