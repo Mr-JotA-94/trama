@@ -79,6 +79,39 @@ cambios de esquema se hacen con migraciones que preservan datos.
 
 ## Deuda técnica conocida
 
+### Árbol de dependencias de backfill en CI — parchado, no congelado (2026-06-23)
+- **Síntoma:** al encadenar backfill a Actions, `import spacy` falló con
+  ModuleNotFoundError: 'click'. click es dependencia transitiva de spaCy (vía su CLI)
+  y la resolución de pip dejó el árbol inconsistente: pineamos spacy/sentence-transformers
+  pero no sus transitivas.
+- **Fix aplicado (camino rápido):** se agregó `click` explícito a requirements-backfill.txt.
+  Funcionó. NO se hizo pip freeze del entorno local que sí funciona.
+- **Decisión:** NO congelar ahora. El parche resolvió el único módulo faltante observado.
+  Pero NO hay evidencia de árbol sano, solo de que click era lo único roto EN ESTE MOMENTO.
+- **Riesgo:** un update transitivo de spaCy/torch/sentence-transformers puede volver a
+  romper la resolución en un run nocturno silencioso (otro ModuleNotFoundError).
+- **Fix de raíz (cuando muerda):** `pip freeze > requirements-backfill.txt` desde el
+  entorno local validado, editando la línea de torch para dejarla sin pin (el step
+  --index-url cpu la maneja antes). Replica en CI exactamente lo que funciona en local.
+- **Reactivar SI:** un run de backfill vuelve a fallar por dependencia faltante, o se
+  actualiza alguna de las libs ML pineadas.
+
+### Prueba de fuego de IPs de Actions — sin confirmar duro (2026-06-23)
+- **Contexto:** los runners de Actions tienen IPs de datacenter; los medios colombianos
+  bloquean datacenter IPs (ya visto 403 desde Anthropic; por eso los diagnósticos se
+  corren en local). El workflow_dispatch se diseñó como esta prueba de fuego.
+- **Estado:** el job crawl corrió verde desde CI, pero VERDE NO GARANTIZA INSERTS. El
+  crawler aísla fallos por fuente (fuente caída → [] sin excepción), así que un bloqueo
+  masivo de IPs se vería idéntico a un run exitoso. backfill verde sugiere que hubo
+  artículos que embeber, pero no se confirmó el conteo de inserts del crawler.
+- **Cómo confirmar:** log del job crawl, línea final `Nuevos: X | Ya existentes: Y |
+  Errores: Z`. Y alto (duplicados) o X alto = llegó a los medios, IPs pasan. Z alto con
+  X≈0,Y≈0 + líneas [403]/[429] por fuente = bloqueo.
+- **Decisión:** NO bloquea esta unidad (backfill quedó automatizado y funcional). Pero
+  si las IPs están bloqueadas, la unidad real pendiente es mayor: "crawler no archiva
+  desde CI", que invalida toda la automatización.
+- **Reactivar SI:** se confirma X≈0 sostenido en los logs, o el banco deja de crecer.
+
 ### UUID estable de stories — RESUELTO (2026-06-21)
 - **Contexto:** reescribir_stories hacía delete()+insert() dejando que Postgres
   generara gen_random_uuid → uuid nuevo cada corrida → todo enlace /historia/[uuid]
@@ -597,6 +630,18 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Notas de operación
+
+- **Pipeline CI encadenado (2026-06-23):** crawler.yml tiene dos jobs: crawl (cron 6h
+  + dispatch) y backfill (needs:crawl). Entornos separados a propósito: crawl liviano
+  (httpx+trafilatura), backfill pesado (torch CPU-only + spaCy + sentence-transformers,
+  requirements-backfill.txt aparte). Caché pip + ~/.cache/huggingface (clave estática
+  hf-...-minilm-l12-v2; subir sufijo si cambia el modelo en backfill_fase2.py). torch
+  se instala con --index-url .../whl/cpu ANTES del requirements para evitar el build CUDA.
+  El clustering NO está en este workflow (sigue manual, a la espera de recalibrar umbrales).
+- **Divergencia silenciosa de git (2026-06-23):** un merge hecho en GitHub adelantó main
+  remoto mientras se trabajaba local sin pull. El push pidió pull→merge commit. Mismo
+  patrón de riesgo que el "manual-doble" de migraciones. Hábito: pull al EMPEZAR la unidad.
+- **Remoto del repo:** github.com/Mr-JotA-94/trama (ojo: no JotaLabs/trama).
 
 - **Capitalización de archivos (convención fijada 2026-06-17):** directorios de
   ruta lowercase (app/buscar/, app/components/), archivos de componente PascalCase
