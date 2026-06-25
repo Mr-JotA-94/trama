@@ -11,6 +11,7 @@
 # trabajo de validación de Fase 2 temprana, no la automatización.
 
 import os
+import re
 import math
 import uuid
 from collections import defaultdict
@@ -34,6 +35,52 @@ SOLO_NOTICIAS = True    # solo 'noticia' forma clúster núcleo (§6). Opinión 
 # de TODAS las historias. Si cambia, todos los enlaces /historia/[id] se
 # rompen de golpe. Generado una vez (2026-06-21), constante para siempre.
 NAMESPACE_STORIES = uuid.UUID("6f3a1c2e-7b4d-5a9e-8c1f-2d3e4f5a6b7c")
+
+# --- Relaciones inter-clúster (story_relations) ---
+# Config VALIDADA contra diag_relaciones v1-v4 (2026-06-25). NO apretar sin medir:
+# cos>=0.55 tira Beto Coral (cos 0.544); subir n_esp puede tirar Air-e.
+UMBRAL_N_ESPECIFICAS = 3      # MOTOR: específicas compartidas mínimas
+GUARDIA_COSENO_REL   = 0.50   # GUARDIA: coseno entre centroides mínimo (load-bearing)
+FRAC_GENERICA        = 0.15   # entidad en > este % de clústeres = genérica
+
+# Limpieza CONGELADA desde diag v4. MITIGACIÓN TEMPORAL: el RUIDO_DURO de conectores es
+# un parche por el NER básico de backfill. Se RETIRA con el re-backfill de NER (queda solo
+# medios + genéricas-por-DF). NO crecer esta lista: ruido nuevo = señal de hacer el fix de
+# NER, no de añadir aquí. El grafo NO se expone en la web hasta ese re-backfill.
+RUIDO_DURO = {
+    "además","asimismo","según","sin embargo","por su parte","no obstante","en cambio",
+    "entre tanto","mientras tanto","de hecho","aun así","ahora","después","hay","bajo",
+    "este","podría","fueron","siga","conozca","lea","encuentre","deje","felicito","más",
+    "quién","la directora del","el proceso","la medida","la decisión","el decreto",
+    "su defensa","su trayectoria","la ley","el comandante de las",
+    "el presidente de estados unidos","el gobierno nacional","los hechos","las imágenes",
+    "el anuncio","según las autoridades","la captura","información",
+    "match electoral de el espectador",
+    "el espectador","el tiempo","el colombiano","vorágine","las2orillas","noticias caracol",
+}
+GEOGRAFIA = {
+    "amazonas","antioquia","arauca","atlántico","bolívar","boyacá","caldas","caquetá",
+    "casanare","cauca","cesar","chocó","córdoba","cundinamarca","guainía","guaviare",
+    "huila","la guajira","magdalena","meta","nariño","norte de santander","putumayo",
+    "quindío","risaralda","santander","sucre","tolima","valle del cauca","valle","vaupés",
+    "vichada","san andrés","providencia","caribe","el caribe","pacífico","pacífica",
+    "andina","andino","orinoquía","amazonía","eje cafetero","los llanos","colombia",
+    "de colombia","bogotá","bogotá d.c.",
+}
+
+def ents_rel(lista):
+    """Normalización para RELACIONES (diag v3/v4): colapsa espacios + strip + lower.
+    SEPARADA de normaliza_ents (que alimenta las compuertas del clustering): no la
+    tocamos para no perturbar el clustering validado."""
+    out = {re.sub(r"\s+", " ", e).strip().lower() for e in (lista or [])}
+    out.discard("")
+    return out
+
+def centroide_de_cluster(ids, por_id):
+    """Centroide del clúster. ÚNICA fuente: la usan calcular_scores (neutralidad) y las
+    relaciones (coseno guardia). Cuando llegue el centroide-por-medio (#2) se cambia SOLO
+    aquí. Asume ids ya colapsados por URL en carga (ARQUITECTURA 2026-06-23)."""
+    return np.mean([np.asarray(por_id[i]["embedding"]) for i in ids], axis=0)
 
 # ---------------------------------------------------------------------
 # Carga
@@ -191,7 +238,7 @@ def calcular_scores(ids, por_id, idf):
     anclas: set de ids ancla (principal + divergente).
     ancla_principal: id de la card ancla principal (la que ganó el gate)."""
     vecs = {i: np.asarray(por_id[i]["embedding"]) for i in ids}
-    centroide = np.mean([vecs[i] for i in ids], axis=0)
+    centroide = centroide_de_cluster(ids, por_id)
 
     # Entidades del clúster (unión), para cobertura
     ents_cluster = set()
@@ -241,34 +288,78 @@ def calcular_scores(ids, por_id, idf):
 # Escritura (borra y reconstruye)
 # ---------------------------------------------------------------------
 def reescribir_stories(clusteres, por_id, idf):
-    # Recalcular todo = limpiar derivados. NO toca articles.
-    # PK es uuid: usamos un filtro is-not-null sobre una columna que toda fila tiene.
+    # Borrado de derivados (NO toca articles). Orden por FK:
+    # relations -> story_articles -> stories.
+    sb.table("story_relations").delete().not_.is_("origen_id", "null").execute()
     sb.table("story_articles").delete().not_.is_("article_id", "null").execute()
     sb.table("stories").delete().not_.is_("id", "null").execute()
 
+    # Uniones de entidades por clúster (para genéricas-por-DF de CLÚSTER).
+    ents_union = []
     for ids in clusteres:
+        u = set()
+        for i in ids:
+            u |= ents_rel(por_id[i]["entidades"])
+        ents_union.append(u)
+
+    n_cl = len(clusteres)
+    df_cl = defaultdict(int)
+    for u in ents_union:
+        for e in u:
+            df_cl[e] += 1
+    umbral_gen = max(2, int(FRAC_GENERICA * n_cl))
+    GENERICAS = {e for e, c in df_cl.items() if c >= umbral_gen}
+
+    def es_especifica(e):
+        return e not in RUIDO_DURO and e not in GEOGRAFIA and e not in GENERICAS
+
+    # PASADA 1: stories + story_articles; stashear (sid, centroide, específicas).
+    nodos = []
+    for ids, u in zip(clusteres, ents_union):
         scores, anclas, ancla_principal = calcular_scores(ids, por_id, idf)
         fechas = [cuando(por_id[i]) for i in ids]
-
         sid = uuid_estable(ids, por_id)
-        story = sb.table("stories").insert({
+
+        sb.table("stories").insert({
             "id": sid,
             "titulo": por_id[ancla_principal]["titulo"],
             "fecha_inicio": min(fechas).isoformat(),
             "fecha_fin": max(fechas).isoformat(),
             "n_articulos": len(ids),
             "n_medios": len({por_id[i]["outlet_id"] for i in ids}),
-        }).execute().data[0]
+        }).execute()
 
-        filas = [{
-            "story_id": story["id"],
-            "article_id": i,
+        sb.table("story_articles").insert([{
+            "story_id": sid, "article_id": i,
             "score_neutralidad": round(scores[i][0], 4),
             "score_cobertura": round(scores[i][1], 4),
             "score_divergencia": round(scores[i][2], 4),
             "es_ancla": i in anclas,
-        } for i in ids]
-        sb.table("story_articles").insert(filas).execute()
+        } for i in ids]).execute()
+
+        esp = {e for e in u if es_especifica(e)}
+        nodos.append((sid, centroide_de_cluster(ids, por_id), esp))
+
+    # PASADA 2: aristas espejo (story_relations). Motor n_especificas, guardia coseno.
+    rel_filas = []
+    for x in range(len(nodos)):
+        sid_a, cen_a, esp_a = nodos[x]
+        for y in range(x + 1, len(nodos)):
+            sid_b, cen_b, esp_b = nodos[y]
+            comp = esp_a & esp_b
+            if len(comp) < UMBRAL_N_ESPECIFICAS:
+                continue
+            cos = coseno(cen_a, cen_b)
+            if cos < GUARDIA_COSENO_REL:
+                continue
+            ev, n, c = sorted(comp), len(comp), round(cos, 4)
+            rel_filas.append({"origen_id": sid_a, "destino_id": sid_b,
+                              "n_especificas": n, "coseno": c, "entidades_compartidas": ev})
+            rel_filas.append({"origen_id": sid_b, "destino_id": sid_a,
+                              "n_especificas": n, "coseno": c, "entidades_compartidas": ev})
+    for k in range(0, len(rel_filas), 500):
+        sb.table("story_relations").insert(rel_filas[k:k+500]).execute()
+    print(f"story_relations: {len(rel_filas)//2} pares ({len(rel_filas)} filas espejo)")
 
 # ---------------------------------------------------------------------
 def main():
