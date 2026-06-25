@@ -23,3 +23,7 @@ Thumbs.db
 # Editores
 .vscode/
 .idea/
+
+#diagnostico y pruebas
+Scripts_calibración-diagnóstico/
+
