@@ -12,8 +12,20 @@ yo-del-futuro entienda el estado actual sin tener que reconstruirlo de memoria.
 Regla de Trama: el archivo es inmutable, nada se borra. Los truncates de abajo
 ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún no
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
-cambios de esquema se hacen con migraciones que preservan datos.
+cambios de esquema se hacen con migraciones que preservan datos.  
 
+- **2026-06-23** — colapso por URL en el backend del clustering (NO es truncate de
+  archivo). Al implementar colapsar_por_url() en clustering_fase2.py, el pipeline pasó
+  a operar sobre artículos únicos (1904) en vez de capturas (2055): 151 capturas de
+  notas editadas dejaron de contarse como artículos separados. Afecta SOLO el cómputo
+  derivado (stories/story_articles): conteo, centroide y compuertas. articles
+  (contenido_visible, hash) jamás se toca — la inmutabilidad y el historial de
+  capturas se preservan intactos. Validado: determinismo del uuid confirmado (dos
+  corridas idénticas → misma huella md5 7a9844b9...); diff vs estado sin colapsar
+  (diag_colapso_diff.py, read-only) → 99 clústeres con identidad intacta, 4 viejos
+  desaparecidos / 6 nuevos aparecidos (todos re-semillas limpias de origen único), 1
+  disolución legítima (f0ac7e42: clúster de 2 medios que solo alcanzaba el segundo
+  medio por contar una recaptura → al colapsar deja de calificar; correcto por diseño).
 - **2026-06-21** — backfill + reclustering de los 663 pendientes (NO es truncate).
   Los ~663 artículos capturados por el crawler desde 06-18 tenían embedding NULL;
   backfill los rellenó (entidades + embedding) vía UPDATE idempotente. Banco:
@@ -79,6 +91,137 @@ cambios de esquema se hacen con migraciones que preservan datos.
 
 ## Deuda técnica conocida
 
+### Centroide no ponderado por medio sesga la neutralidad por volumen (2026-06-25)
+- **Causa raíz (identificada, NO medida aún):** el centroide del clúster es np.mean de
+  los embeddings de TODOS los artículos (calcular_scores, clustering_fase2.py), sin
+  ponderar por medio. Si un medio domina en volumen dentro del clúster, el centroide se
+  corre hacia su "centro de masa" → como neutralidad = cercanía al centroide, los
+  artículos de ese medio salen sistemáticamente más "neutrales". Hipótesis de Jota: El
+  Tiempo (alto volumen) queda anclado con frecuencia desproporcionada. Es el mismo sesgo
+  de sobre-representación por volumen del feed, ahora DENTRO del clúster.
+- **Fix candidato (decidido, pendiente de medir impacto):** centroide = promedio de los
+  centroides-por-medio, sobre URLs colapsadas. Voto DURO: 1 medio = 1 voto, sin importar
+  cuántas URLs aporte. Neutralidad pasa a medir "consenso ENTRE MEDIOS", no entre
+  artículos. Ataca la causa raíz sin introducir sesgo nuevo.
+- **Plan B (no de entrada):** si el voto duro da demasiado poder a medios de 1 nota
+  ("poder de veto de la minoría" — un medio con 1 URL pesa 1/n_medios del centroide),
+  amortiguar con peso 1/sqrt(n_notas_del_medio) en vez de voto duro. NO meterlo antes de
+  medir: es optimización prematura. El efecto "voz a la minoría" se acepta de entrada
+  como FEATURE (coherente con Trama: el ángulo minoritario no debe quedar aplastado),
+  no como bug.
+- **Lo que el fix NO toca (frontera explícita, para no esperar de más):** solo afecta la
+  construcción del centroide → neutralidad. NO toca score_cobertura ni score_divergencia.
+  NO resuelve el límite epistémico (si todos los medios comparten un punto ciego, el
+  centroide lo hereda igual — eso es omisión, Fase 3). NO resuelve la asimetría del
+  espectro mediático (curaduría, no fórmula).
+- **DESCARTADO con razón:** ponderar por cobertura (idea inicial de Jota) — la cobertura
+  premia mencionar muchas entidades, así que reforzaría las reacciones editorializadas
+  densas (ya medido, caso Chalá 2026-06-17). Cambiaría "sesgo por volumen" por "sesgo por
+  densidad de entidades". Dos males, no una solución.
+- **Alcance del cambio:** la neutralidad re-ponderada es SOLO para elegir el ancla. NO se
+  expone al usuario (coherente con la deuda de no exponer scores hasta que cobertura esté
+  arreglada). Anotado: reevaluar ese nivel de transparencia con el usuario según evolucione.
+- **Tier 2, load-bearing** (calcular_scores decide qué artículo representa el clúster en
+  las cards). NO tocar sin medir impacto primero (ver diagnóstico en Ideas).
+- **Reactivar/abordar SI:** el diagnóstico de impacto confirma dominancia frecuente Y que
+  el ancla cambia en suficientes clústeres para mejor. Natural hacerlo ANTES de activar
+  Semana/RTVC/La Silla, porque más medios con volumen asimétrico agravan el sesgo —
+  medir el centroide-por-medio da la línea base.
+
+### Relaciones inter-clúster: medición v1–v4 y decisión de criterio (2026-06-24)
+- **Qué se midió (diag_relaciones v1→v4, read-only, desechables):** si existe un
+  criterio para ligar clústeres relacionados (grafo de historias) sin fusionarlos.
+- **Hallazgos con datos:**
+  (1) El coseno entre centroides liga por TEMA, no por hecho (clima del domingo ↔
+      resultados por ciudad: cos 0.86). No hay valle en su distribución. Sirve de
+      GUARDIA, jamás de motor.
+  (2) El peso IDF crudo estaba podrido de ruido NER: boilerplate de fuente ("match
+      electoral de el espectador"), conectores ("sin embargo", "lea", "encuentre") y
+      nombres de medios ("el tiempo", "el colombiano") — ligaban por FUENTE. El IDF
+      premia lo raro, así que el boilerplate raro pesaba alto.
+  (3) Limpieza en tres capas (ruido duro a mano + geografía clasificada-no-borrada +
+      genéricas por DF de CLÚSTER) + métrica n_especificas: FUNCIONA para hechos
+      discretos (Air-e, capturas, Arizabaleta, Beto Coral, Cauca, giro LatAm).
+  (4) El macro-tema (campaña electoral) es un HUB IRREDUCIBLE. Medido: el cap de
+      presentación NO lo desinfla (Pastrana in-degree 26 bajo cap top-5); cluster-IDF
+      tampoco (26→23). Causa real: tamaño de clúster — Pastrana/Chalá tienen 125-134
+      entidades específicas propias vs 31-40 de un hecho discreto → superficie de
+      solapamiento gigante → tocan medio archivo por tamaño, no por relación.
+  (5) mean_df (df-de-clúster promedio de las entidades propias) NO discrimina señal de
+      ruido: separa "tema grande" de "hecho aislado". Hipótesis descartada con datos.
+- **Decisión:** el criterio de story_relations será n_especificas ≥ umbral + coseno
+  guardia. El hub se controla con CAP DE IN-DEGREE (+out-degree) en la capa de LECTURA
+  (presentación, reversible), NO en la tabla. La distinción "contexto" vs "seguimiento"
+  del macro-tema se DIFIERE a Fase 3 (LLM + tipo_relacion): ninguna vara de entidades la
+  resuelve.
+- **Reactivar/revisar SI:** al diseñar el esquema, el umbral elegido deja pasar madeja,
+  o si la sobre-fusión (ver Ideas) resulta ser la causa raíz y la corrige.
+
+### Ruido de NER contamina relaciones — el fix es upstream, no en relaciones (2026-06-24)
+- **Síntoma medido:** aun con stoplist a mano, colaban "entidades" basura ("la captura",
+  "según las autoridades", "los hechos") y nombres de medios. El stoplist a mano es
+  perder: la cola de basura de NER es infinita.
+- **Causa:** NER básico en backfill_fase2.py (ya registrado como Idea con disparador). A
+  nivel artículo el IDF sobre miles de docs lo lavaba; a nivel de unión de entidades de
+  clúster, el ruido se concentra y manda.
+- **Decisión:** NO limpiar en la capa de relaciones (whack-a-mole). El fix de raíz es
+  mejorar el filtro NER en backfill (Tier 2 load-bearing, requiere re-backfill) — su
+  propia unidad. Las relaciones se protegen con genéricas-por-DF + stoplist duro acotado
+  (medios) como mitigación, no como solución.
+- **Reactivar SI:** se aborda la unidad de relaciones a fondo, o el ruido ensucia el
+  grafo de forma visible al exponerlo.
+
+### story_relations ensancha la ventana del delete-then-insert (2026-06-24)
+- **Decisión en frío:** story_relations será caché derivada pura, recomputada en la
+  misma corrida que stories (delete+insert). Coherente con "stories = caché derivada",
+  pero AGREGA otra tabla a la ventana no transaccional ya documentada. A esta escala no
+  muerde; registrado para no olvidarlo al hacer el clustering atómico/transaccional.
+- **Reactivar SI:** se ataca la robustez del delete-then-insert (entonces cubrir ambas
+  tablas), o el banco crece y la ventana de web vacía se vuelve inaceptable.
+
+### Dependencias del clustering sin pin en CI (2026-06-23)
+- **Síntoma:** ninguno aún. El job `clustering` de crawler.yml instala
+  `pip install numpy supabase python-dotenv` sin versiones. El resto del proyecto
+  instala desde requirements*.txt.
+- **Riesgo:** un update mayor silencioso de numpy o supabase puede romper el
+  clustering en un run nocturno (mismo patrón que ya mordió con `click` en backfill).
+- **Decisión:** NO pinear ahora. El entorno es de 3 paquetes ligeros y a esta escala
+  aguanta. Pero NO dejarlo silencioso — registrado para no repetir el olvido de
+  backfill.
+- **Fix de raíz (cuando muerda):** crear requirements-clustering.txt con `pip freeze`
+  de un entorno limpio (solo numpy/supabase/dotenv + sus transitivas), apuntar el
+  `cache-dependency-path` del job a ese archivo.
+- **Reactivar SI:** un run de clustering falla por dependencia, o se actualiza numpy/
+  supabase de versión mayor.
+
+### Clustering delete-then-insert no transaccional (2026-06-23)
+- **Síntoma:** ninguno medido. reescribir_stories() hace delete() de stories y
+  story_articles, LUEGO inserta los clústeres nuevos. No es transaccional.
+- **Riesgo:** si el script muere entre el borrado y el insert (timeout de Supabase,
+  OOM, corte de red), las stories quedan vacías o parciales. La web mostraría "Fase 2
+  en construcción" con datos reales en articles. Automatizado cada 6h, falla de
+  madrugada y la web queda rota hasta el siguiente run o hasta que se note.
+- **Por qué NO se atacó al automatizar:** a 1904 artículos el insert no falla; el
+  recompute corre en ~2 min sin incidentes. Hacerlo transaccional/atómico (p. ej.
+  escribir a tabla temporal y swap) es su propia unidad de robustez.
+- **Decisión:** automatizar tal cual, documentar el modo de fallo.
+- **Reactivar SI:** el banco crece y los inserts empiezan a tardar/fallar, o aparece
+  tráfico real que haga inaceptable una ventana de web vacía.
+
+### [VALIDADA — NO SE MOVIÓ] Umbrales provisionales del clustering (cierre 2026-06-23)
+- La deuda "umbrales provisionales sin recalibrar con multitema" (abierta 2026-06-21)
+  se cierra: recalibrados con datos sobre 105 clústeres multitema. Diagnóstico
+  (diag_umbrales.py, read-only, recomputa la formación desde articles):
+  529 aristas pasan ambas compuertas; histogramas de peso IDF y coseno densos por
+  encima del corte sin valle que sugiera mover el umbral; casi-fallos por semántica
+  (peso alto, coseno 0.65-0.70) son "mismo tema, distinto hecho" (captura Chalá vs
+  homicidio periodista, etc.) — CORRECTOS de rechazar; casi-fallos por entidades
+  (coseno alto, peso 15-20) son pares electorales genéricos — CORRECTOS de rechazar.
+  Clústeres chicos (2-3) revisados a ojo: todos coherentes.
+- **Conclusión:** IDF≥20 / coseno≥0.70 VALIDADOS con volumen multitema. NO se cambió
+  ningún número — la metodología de dos compuertas aguantó el salto de 1 macro-tema a
+  104 temas distintos. "Provisional" pasa a "validado".
+
 ### Árbol de dependencias de backfill en CI — parchado, no congelado (2026-06-23)
 - **Síntoma:** al encadenar backfill a Actions, `import spacy` falló con
   ModuleNotFoundError: 'click'. click es dependencia transitiva de spaCy (vía su CLI)
@@ -96,21 +239,6 @@ cambios de esquema se hacen con migraciones que preservan datos.
 - **Reactivar SI:** un run de backfill vuelve a fallar por dependencia faltante, o se
   actualiza alguna de las libs ML pineadas.
 
-### Prueba de fuego de IPs de Actions — sin confirmar duro (2026-06-23)
-- **Contexto:** los runners de Actions tienen IPs de datacenter; los medios colombianos
-  bloquean datacenter IPs (ya visto 403 desde Anthropic; por eso los diagnósticos se
-  corren en local). El workflow_dispatch se diseñó como esta prueba de fuego.
-- **Estado:** el job crawl corrió verde desde CI, pero VERDE NO GARANTIZA INSERTS. El
-  crawler aísla fallos por fuente (fuente caída → [] sin excepción), así que un bloqueo
-  masivo de IPs se vería idéntico a un run exitoso. backfill verde sugiere que hubo
-  artículos que embeber, pero no se confirmó el conteo de inserts del crawler.
-- **Cómo confirmar:** log del job crawl, línea final `Nuevos: X | Ya existentes: Y |
-  Errores: Z`. Y alto (duplicados) o X alto = llegó a los medios, IPs pasan. Z alto con
-  X≈0,Y≈0 + líneas [403]/[429] por fuente = bloqueo.
-- **Decisión:** NO bloquea esta unidad (backfill quedó automatizado y funcional). Pero
-  si las IPs están bloqueadas, la unidad real pendiente es mayor: "crawler no archiva
-  desde CI", que invalida toda la automatización.
-- **Reactivar SI:** se confirma X≈0 sostenido en los logs, o el banco deja de crecer.
 
 ### UUID estable de stories — RESUELTO (2026-06-21)
 - **Contexto:** reescribir_stories hacía delete()+insert() dejando que Postgres
@@ -371,6 +499,75 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
+
+### Diagnóstico read-only: impacto del centroide ponderado por medio (2026-06-25)
+- **Destraba la deuda "centroide no ponderado por medio".** Mide ANTES de tocar
+  calcular_scores (Tier 2 load-bearing). Corrible sobre el snapshot estático que Jota
+  monta a archivos del proyecto (no necesita la base viva).
+- **Cuatro preguntas que debe responder:**
+  (1) DOMINANCIA: ¿cuántos de los ~122 clústeres tienen un medio con mayoría de URLs?
+      Si la mayoría son equilibrados (2-2, 3-2), el fix casi no mueve nada → no vale tocar
+      load-bearing. Si muchos son 5-1-1, es real. ESTE número decide si el fix se justifica.
+  (2) CORRELACIÓN: ¿el ancla principal actual correlaciona con el medio dominante en
+      volumen? (¿se confirma la hipótesis de El Tiempo?).
+  (3) DELTA: recalcular el centroide con voto-por-medio y contar en cuántos clústeres
+      CAMBIA el ancla. Pocos → no vale; muchos → real.
+  (4) CALIDAD: en los que cambian, juzgar a ojo si el ancla nuevo es más representativo
+      o es una rareza de un medio de 1 nota (validación del "poder de veto de la minoría").
+- **Unidad propia, measure-first.** NO mezclar con el chat del esquema story_relations ni
+  con el de activar medios nuevos. Si los datos confirman impacto, recién ahí se toca
+  calcular_scores en su propia unidad con Claude Code.
+
+### Relaciones inter-clúster: medición v1–v4 y decisión de criterio (2026-06-24)
+- **Qué se midió (diag_relaciones v1→v4, read-only, desechables):** si existe un
+  criterio para ligar clústeres relacionados (grafo de historias) sin fusionarlos.
+- **Hallazgos con datos:**
+  (1) El coseno entre centroides liga por TEMA, no por hecho (clima del domingo ↔
+      resultados por ciudad: cos 0.86). No hay valle en su distribución. Sirve de
+      GUARDIA, jamás de motor.
+  (2) El peso IDF crudo estaba podrido de ruido NER: boilerplate de fuente ("match
+      electoral de el espectador"), conectores ("sin embargo", "lea", "encuentre") y
+      nombres de medios ("el tiempo", "el colombiano") — ligaban por FUENTE. El IDF
+      premia lo raro, así que el boilerplate raro pesaba alto.
+  (3) Limpieza en tres capas (ruido duro a mano + geografía clasificada-no-borrada +
+      genéricas por DF de CLÚSTER) + métrica n_especificas: FUNCIONA para hechos
+      discretos (Air-e, capturas, Arizabaleta, Beto Coral, Cauca, giro LatAm).
+  (4) El macro-tema (campaña electoral) es un HUB IRREDUCIBLE. Medido: el cap de
+      presentación NO lo desinfla (Pastrana in-degree 26 bajo cap top-5); cluster-IDF
+      tampoco (26→23). Causa real: tamaño de clúster — Pastrana/Chalá tienen 125-134
+      entidades específicas propias vs 31-40 de un hecho discreto → superficie de
+      solapamiento gigante → tocan medio archivo por tamaño, no por relación.
+  (5) mean_df (df-de-clúster promedio de las entidades propias) NO discrimina señal de
+      ruido: separa "tema grande" de "hecho aislado". Hipótesis descartada con datos.
+- **Decisión:** el criterio de story_relations será n_especificas ≥ umbral + coseno
+  guardia. El hub se controla con CAP DE IN-DEGREE (+out-degree) en la capa de LECTURA
+  (presentación, reversible), NO en la tabla. La distinción "contexto" vs "seguimiento"
+  del macro-tema se DIFIERE a Fase 3 (LLM + tipo_relacion): ninguna vara de entidades la
+  resuelve.
+- **Reactivar/revisar SI:** al diseñar el esquema, el umbral elegido deja pasar madeja,
+  o si la sobre-fusión (ver Ideas) resulta ser la causa raíz y la corrige.
+
+### Ruido de NER contamina relaciones — el fix es upstream, no en relaciones (2026-06-24)
+- **Síntoma medido:** aun con stoplist a mano, colaban "entidades" basura ("la captura",
+  "según las autoridades", "los hechos") y nombres de medios. El stoplist a mano es
+  perder: la cola de basura de NER es infinita.
+- **Causa:** NER básico en backfill_fase2.py (ya registrado como Idea con disparador). A
+  nivel artículo el IDF sobre miles de docs lo lavaba; a nivel de unión de entidades de
+  clúster, el ruido se concentra y manda.
+- **Decisión:** NO limpiar en la capa de relaciones (whack-a-mole). El fix de raíz es
+  mejorar el filtro NER en backfill (Tier 2 load-bearing, requiere re-backfill) — su
+  propia unidad. Las relaciones se protegen con genéricas-por-DF + stoplist duro acotado
+  (medios) como mitigación, no como solución.
+- **Reactivar SI:** se aborda la unidad de relaciones a fondo, o el ruido ensucia el
+  grafo de forma visible al exponerlo.
+
+### story_relations ensancha la ventana del delete-then-insert (2026-06-24)
+- **Decisión en frío:** story_relations será caché derivada pura, recomputada en la
+  misma corrida que stories (delete+insert). Coherente con "stories = caché derivada",
+  pero AGREGA otra tabla a la ventana no transaccional ya documentada. A esta escala no
+  muerde; registrado para no olvidarlo al hacer el clustering atómico/transaccional.
+- **Reactivar SI:** se ataca la robustez del delete-then-insert (entonces cubrir ambas
+  tablas), o el banco crece y la ventana de web vacía se vuelve inaceptable.
 
 ### [RESUELTO 2026-06-21 → ver Deuda técnica/"UUID estable de stories"] Estabilidad de enlaces de historias (UUID estable) — prerequisito de automatización (2026-06-21)
 - **Problema:** reescribir_stories (clustering_fase2.py) hace delete()+insert() de

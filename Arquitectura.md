@@ -244,6 +244,20 @@ Las dos cards ancla se eligen así (criterio actualizado 2026-06-18):
   fusión de clústeres y re-semilla (el más antiguo abandona) generan uuid nuevo — caso
   raro, documentado en BITACORA con disparador para escalar a tabla de identidad.
 
+  - **Átomo del clustering = URL, no captura (colapso al cargar, 2026-06-23):** el
+  clustering colapsa las múltiples capturas de un mismo URL a un representante (la
+  última captura) en cargar_articulos(), ANTES de calcular IDF, formar aristas y
+  calcular scores. Razón: una nota editada genera filas nuevas (hash distinto,
+  inmutabilidad), pero es UN artículo. Sin colapsar, una nota muy editada pesaba Nx
+  en el centroide del clúster y inflaba n_articulos, contaminando además el orden
+  "Más cobertura" del feed (que ordena por n_articulos). Colapsar al cargar lleva el
+  átomo correcto a TODO el pipeline de una sola intervención, sin tocar compuertas ni
+  scores. Resultado: backend y frontend (colapsarCluster.js) cuentan el mismo átomo —
+  n_articulos del feed == nodos del hilo del expediente. El uuid5 sobrevive al
+  colapso porque el "más antiguo" es un URL (permanente), no una captura. Residual
+  conocido (medido 2026-06-23): un clúster que solo alcanzaba 2 medios gracias a una
+  recaptura se disuelve al colapsar — correcto, no era cobertura cruzada real.
+
 ### ⭐ Evolución del modelo: grafo de historias relacionadas (idea de Jota)
 Más allá de clústeres aislados: artículos que NO son la misma noticia pero están
 ligados (una nota y su derivada, un hecho y su reacción). Relación ENTRE clústeres,
@@ -255,6 +269,18 @@ clúster), PERO con corte de similitud MEDIA, no alta: suficiente para ligar, no
 tanta como para fusionar. Los pares "mismo tema, distinto hecho" que el clustering
 rechaza (zona electoral, coseno 0.43–0.76) son precisamente las aristas candidatas
 del grafo. Números pendientes de medir SOBRE clústeres reales, no antes.
+
+**Criterio refinado con medición (2026-06-24, diag_relaciones v1–v4 — detalle en
+BITACORA):** la idea de "dos compuertas un nivel arriba" se corrigió con datos. El
+coseno entre centroides liga por TEMA, no por hecho → es GUARDIA, no motor. El motor es
+n_especificas: entidades reales y específicas compartidas, tras limpiar ruido NER +
+clasificar geografía + descartar genéricas por DF de CLÚSTER (la rareza correcta a este
+nivel es df-de-clúster, no df-de-artículo). Funciona para hechos discretos. El macro-tema
+(p. ej. campaña electoral) es un HUB IRREDUCIBLE por heurística de entidades (clúster
+grande = superficie de solapamiento grande); se controla con CAP DE IN-DEGREE en la capa
+de lectura (presentación), y la distinción contexto/seguimiento se difiere a Fase 3
+(LLM + tipo_relacion). story_relations = caché derivada pura (se recomputa con stories,
+no es estado). Esquema concreto pendiente de su propia unidad.
 
 ### Nota sobre expansión de medios y Fase 2
 El clustering opera sobre artículos, no sobre medios. Agregar un medio = config
