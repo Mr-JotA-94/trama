@@ -75,6 +75,9 @@ Config en `outlets`: fuentes (jsonb: rss/sitemap), regla_seccion (jsonb:
 primer_segmento/fijo/ninguno), nivel_paywall, y columnas de perfil reservadas
 (propietario, grupo_economico, etc.) para Fase 3.
 
+10. story_relations (grafo clúster↔clúster, Fase 2 avanzada; dirigido-espejo, caché
+    derivada pura, RLS + policy de SELECT. Criterio y limpieza en BITACORA 2026-06-25).
+
 **Regla inmutable:** nunca UPDATE sobre contenido_visible ni hash. Artículo que
 cambia = fila nueva (mismo url, hash distinto). Deduplicación por unique(url,hash).
 
@@ -279,8 +282,7 @@ nivel es df-de-clúster, no df-de-artículo). Funciona para hechos discretos. El
 (p. ej. campaña electoral) es un HUB IRREDUCIBLE por heurística de entidades (clúster
 grande = superficie de solapamiento grande); se controla con CAP DE IN-DEGREE en la capa
 de lectura (presentación), y la distinción contexto/seguimiento se difiere a Fase 3
-(LLM + tipo_relacion). story_relations = caché derivada pura (se recomputa con stories,
-no es estado). Esquema concreto pendiente de su propia unidad.
+(LLM + tipo_relacion). story_relations = caché derivada pura (...). Esquema RESUELTO (migración 000010, dirigido-espejo, criterio n_esp≥3 ∧ cos≥0.50; ver BITACORA 2026-06-25). Grafo poblado pero NO expuesto hasta el re-backfill de NER.
 
 ### Nota sobre expansión de medios y Fase 2
 El clustering opera sobre artículos, no sobre medios. Agregar un medio = config

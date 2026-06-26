@@ -8,44 +8,14 @@ from dotenv import load_dotenv
 from supabase import create_client
 import spacy
 from sentence_transformers import SentenceTransformer
+from ner_filtro import extraer_entidades
 
 load_dotenv()
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
-TIPOS_ENT = {"PER", "ORG", "LOC", "MISC"}
 LOTE = 50  # cuántos artículos por tanda al actualizar (no saturar la API)
 
-# Filtro anti-basura de NER: descarta los falsos positivos que vimos en el
-# diagnóstico ("Además", "Asimismo", frases largas que spaCy marca como entidad).
-STOPWORDS_ENT = {
-    "además", "asimismo", "según", "sin embargo", "por su parte",
-    "no obstante", "en cambio", "entre tanto", "mientras tanto",
-}
 
-def entidad_valida(texto: str) -> bool:
-    t = texto.strip()
-    if len(t) <= 2 or len(t) > 40:          # muy corta o frase larga (no es entidad)
-        return False
-    if t.lower() in STOPWORDS_ENT:
-        return False
-    if t.count(" ") > 4:                    # 5+ palabras: casi seguro ruido de NER
-        return False
-    return True
-
-def extraer_entidades(nlp, titulo: str, cuerpo: str) -> list[str]:
-    doc = nlp(f"{titulo}. {cuerpo[:2000]}")
-    vistas, fuera = set(), []
-    for e in doc.ents:
-        if e.label_ not in TIPOS_ENT:
-            continue
-        t = e.text.strip()
-        if not entidad_valida(t):
-            continue
-        clave = t.lower()
-        if clave not in vistas:             # dedup por forma en minúsculas
-            vistas.add(clave)
-            fuera.append(t)                 # guardamos la forma original
-    return fuera
 
 def main():
     print("Cargando modelos...")
