@@ -14,6 +14,13 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
 
+- **2026-06-25** — migración 000010 (crea story_relations; NO toca datos de archivo).
+  Tabla nueva, vacía al crear; el clustering la pobló en su corrida (137 clústeres →
+  289 pares / 578 filas espejo). story_relations es CÁLCULO DERIVADO reconstruible
+  desde stories; se borra/recomputa cada corrida igual que stories/story_articles.
+  articles jamás se toca. RLS activo + policy de SELECT pública explícita (lección
+  migración 000009: tabla nueva con RLS sin policy = web ve cero filas en silencio).
+
 - **2026-06-23** — colapso por URL en el backend del clustering (NO es truncate de
   archivo). Al implementar colapsar_por_url() en clustering_fase2.py, el pipeline pasó
   a operar sobre artículos únicos (1904) en vez de capturas (2055): 151 capturas de
@@ -90,6 +97,55 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Deuda técnica conocida
+
+### Writes masivos uno-por-uno son frágiles — OBSERVADO (2026-06-26)
+- **Síntoma medido:** el re-backfill (2732 UPDATE uno por uno sobre conexión HTTP/2
+  persistente al pooler) se cortó a ~800 writes con WinError 10054 ("connection forcibly
+  closed by remote host"). El pooler de Supabase cierra la conexión por volumen/duración.
+- **Causa:** writes masivos sin resiliencia. Convierte en OBSERVADA la deuda teórica del
+  delete-then-insert del clustering (registrada 2026-06-23): el modo de fallo es real.
+- **Fix aplicado (en el re-backfill):** script REANUDABLE por diseño (UPDATE solo si las
+  entidades cambian → re-correr salta lo ya limpio, sin archivo de checkpoint) + retry con
+  backoff + reconexión ante corte + cliente fresco cada 300 writes. Criterio de
+  consistencia: una corrida que diga aplicados=0.
+- **Decisión:** NO robustecer el clustering ahora. Inserta por LOTES (no uno por uno) y
+  aguantó esta corrida. Pero comparte el patrón; si al correrlo se corta, aplicar el mismo
+  enfoque (su propia unidad de robustez, junto con la atomicidad del delete-then-insert).
+- **Reactivar SI:** el clustering se corta a mitad en un run, o el banco crece y los writes
+  empiezan a fallar/tardar.
+
+### story_relations: esquema, criterio y limpieza congelada (2026-06-25)
+- **Esquema (migración 000010):** grafo clúster↔clúster DIRIGIDO-ESPEJO. PK compuesta
+  (origen_id, destino_id), FK a stories ON DELETE CASCADE, CHECK origen≠destino, índice
+  (origen_id, n_especificas desc) para el cap de lectura, RLS + policy de SELECT pública.
+  Columnas: n_especificas (MOTOR), coseno (GUARDIA), entidades_compartidas jsonb
+  (EVIDENCIA, auditable + UI). Caché derivada pura: se borra/recomputa con stories.
+  Dirigido-espejo (2 filas por par) elegido sobre no-dirigido: el cap de lectura es
+  "top-K vecinos del foco" = índice limpio por origen, y la direccionalidad de Fase 3
+  (derivada/reacción) entra sin rediseño. Costo 2× en tabla diminuta = trivial.
+- **tipo_relacion OMITIDO a propósito.** DISPARADOR: al construir Fase 3, la anotación de
+  LLM exige tabla aparte no-volátil (como analyses↔articles) o identidad estable de
+  relación — el delete+insert del clustering la borraría. Añadir columna después es gratis.
+- **Umbral VALIDADO: n_esp≥3 ∧ cos≥0.50. NO se apretó.** "Conservador = más estricto"
+  rechazado con datos: cos≥0.55 tira Beto Coral (medido 0.544 en diag, 0.589 en producción),
+  subir n_esp arriesga Air-e. Falso-negativo de apretar = MEDIDO; ganancia de precisión = NO
+  medida. La banda n_esp=3 se audita sobre el grafo vivo; si sale basura se aprieta por n_esp
+  dejando cos en 0.50.
+- **Limpieza CONGELADA de diag v4 como mitigación TEMPORAL.** Excede la mitigación
+  sancionada (medios + genéricas-por-DF): conectores sub-DF ("sin embargo", "hay") viven
+  en <18 clústeres y genéricas-DF no los atrapa, solo el RUIDO_DURO completo. Sin él, los
+  números validados no transfieren. RETIRO = re-backfill de NER (entonces la lista baja a
+  medios + genéricas-DF). NO crecer la lista: ruido nuevo = señal de hacer el NER, no de
+  añadir aquí. GATE: el grafo NO se expone en la web hasta el re-backfill de NER.
+- **centroide_de_cluster() factorizado** (única fuente: calcular_scores + relaciones).
+  ents_rel() separada de normaliza_ents (no se tocan las compuertas del clustering).
+  DISPARADOR #2 (centroide-por-medio): se cambia 1 función y se REVALIDA la guardia de coseno.
+- **O(clústeres²) sin ventana en la pasada 2** (a diferencia del ±72h del clustering de
+  artículos). El coseno va gateado tras n_especificas, así que el cómputo es barato hoy.
+  delete+insert ahora cubre 3 tablas (relations→story_articles→stories): ventana no
+  transaccional más ancha, aceptada en frío a esta escala. Ver PROYECCION_ESCALA.
+- **Reactivar/revisar SI:** el eyeball del grafo muestra basura (apretar n_esp), o llega
+  el re-backfill de NER (retirar el RUIDO_DURO de conectores y quitar el gate de UI).
 
 ### Centroide no ponderado por medio sesga la neutralidad por volumen (2026-06-25)
 - **Causa raíz (identificada, NO medida aún):** el centroide del clúster es np.mean de
@@ -500,6 +556,18 @@ cambios de esquema se hacen con migraciones que preservan datos.
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
+### Vía OR para reacciones entity-sparse en story_relations (idea, 2026-06-25)
+- **Observación medida:** el motor solo-n_especificas deja fuera enlaces de cos alto y
+  pocas específicas (1–2) — justo "hecho y su reacción", el corazón del grafo. Ej. extremo:
+  Air-e liquidación↔pushback (cos 0.899, ~2 específicas reales tras quitar geografía).
+- **Por qué es separable de la madeja:** los pares-madeja que se rechazaron (clima
+  domingo↔resultados ciudad, cos 0.86) tienen ~CERO específicas (todo geografía); las
+  reacciones reales sí tienen 1–2. Una vía OR "(n_esp≥3) OR (cos≥~0.85 AND n_esp≥2)"
+  podría recuperarlas sin readmitir la madeja.
+- **NO implementar por inferencia.** Antes: un diag del cuadrante cos-alto/n_esp-bajo para
+  medir cuántas reacciones legítimas viven ahí. Solo si el eyeball del grafo vivo muestra
+  que faltan. v1 va con compuerta única.
+
 ### Diagnóstico read-only: impacto del centroide ponderado por medio (2026-06-25)
 - **Destraba la deuda "centroide no ponderado por medio".** Mide ANTES de tocar
   calcular_scores (Tier 2 load-bearing). Corrible sobre el snapshot estático que Jota
@@ -546,6 +614,51 @@ cambios de esquema se hacen con migraciones que preservan datos.
   resuelve.
 - **Reactivar/revisar SI:** al diseñar el esquema, el umbral elegido deja pasar madeja,
   o si la sobre-fusión (ver Ideas) resulta ser la causa raíz y la corrige.
+
+### Re-backfill de NER — fix de raíz del ruido de entidades (2026-06-26)
+- **Resuelve** la deuda registrada 2026-06-24 ("Ruido de NER contamina relaciones — el
+  fix es upstream"). No reescribo esa entrada (append-only); esta la cierra.
+- **Diagnóstico measure-first, dos pasos:**
+  (1) Diag A (snapshot CSV, read-only, lo corrió Claudio): el filtro que se barajaba
+      —"descartar si el primer token es artículo/preposición"— FALLA por los dos lados.
+      Mata señal real (La Guajira, La Fiscalía, los Estados Unidos, El Salvador, El
+      Consejo Nacional Electoral; ~1509 ocurrencias) Y deja pasar ruido (No se pierda,
+      Siga leyendo, Estamos, Gobierno nacional; ~1500+). Ningún filtro a nivel de string
+      separa: el ruido viene capitalizado por inicio de oración, así que "minúscula
+      inicial" no sirve.
+  (2) Diag B (spaCy es_core_news_md, muestra 200, en máquina de Jota): el discriminador
+      correcto es morfosintáctico — conservar la entidad si tiene ≥1 token PROPN o es
+      sigla en mayúsculas. Descarta MISC 56,8%, conserva PER/ORG/LOC ~96%. El ~4% de
+      PER/LOC/ORG descartado NO es señal: es ruido que spaCy MAL-ETIQUETÓ como entidad
+      (Además→LOC, Según→PER, Estamos→ORG). El filtro PROPN es más robusto que el propio
+      label de spaCy. Rescata siglas (CNE, DANE, CIDH, CTI). MISC se DEJA en TIPOS_ENT: el
+      43% que conserva es señal con PROPN (eventos); el filtro la separa sin tratar el
+      label como criterio.
+- **Decisión de diseño:** filtro en ner_filtro.py como FUENTE ÚNICA, importado por
+  backfill_fase2.py (futuros) y rebackfill_ner.py (banco). Una sola definición = pasado y
+  futuro consistentes (evita el riesgo de divergencia de duplicar la lógica). Regla:
+  ≥1 PROPN o sigla, no-medio (MEDIOS = lista CERRADA; NO crecer con boilerplate, eso es
+  deuda de extracción), topes 60 chars / 8 tokens. DIVISIÓN DE TRABAJO: el filtro NER quita
+  lo que NO es entidad; las genéricas reales (Petro, Gobierno nacional) las sigue manejando
+  el IDF / FRAC_GENERICA, no el filtro. De paso corrige el bug viejo count(" ")>4, que
+  mataba institucionales largas legítimas (Instituto Colombiano de Bienestar Familiar).
+- **Dry-run (2732 art., sin escribir):** −20,2% entidades. 2 vacíos (notas cuyo NER era
+  100% ruido — correcto, no anclan clúster). 80 ganancias (recuperación de largas con
+  PROPN; mecanismo del bug viejo). Mayores pérdidas concentradas en horóscopos/opinión
+  (ruido puro: tarot, primera persona, conectores). Ningún medio colapsa; voragine limpia
+  más (26%, coherente con extracción trafilatura-only) pero queda con mediana 10,5 y cero
+  vacíos.
+- **Impacto en stories (medido contra snapshot _stories_pre_ner):** 151→149. uuid
+  sobreviven 143 (94,7%), rotos 8, nuevos 6. El −2 neto = disolución de uniones espurias
+  que existían por compartir boilerplate de alto IDF (uniones por fuente, no por hecho).
+  Es el efecto buscado, no un daño. 8 enlaces /historia/[id] rotos: bajo, no dispara la
+  tabla de identidad. Conexión con la sospecha de sobre-fusión (TRASPASO previo #2): el
+  re-backfill atacó parcialmente esa causa (boilerplate inflando la compuerta 1).
+- **Inmutabilidad:** UPDATE SOLO de entidades (campo derivado); contenido_visible/hash
+  intactos. Coherente con stories = caché derivada.
+- **Reactivar/revisar SI:** se cambia el filtro NER de nuevo (re-correr el re-backfill), o
+  un medio nuevo se activa (agregar a MEDIOS), o aparece una clase de ruido que el filtro
+  PROPN no atrapa (medir antes de tocar).
 
 ### Ruido de NER contamina relaciones — el fix es upstream, no en relaciones (2026-06-24)
 - **Síntoma medido:** aun con stoplist a mano, colaban "entidades" basura ("la captura",
