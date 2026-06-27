@@ -107,6 +107,30 @@ function CardSecundaria({ articulo: a }) {
   );
 }
 
+function CardRelacionada({ historia: h }) {
+  return (
+    <article className="card-secundaria card-relacionada">
+      <div className="card-header-tags">
+        <span className="tag">
+          {h.n_medios} {h.n_medios === 1 ? "medio" : "medios"}
+        </span>
+        <span className="tag">
+          {h.n_articulos} {h.n_articulos === 1 ? "captura" : "capturas"}
+        </span>
+        <span className="historia-fecha">
+          {fechaRango(h.fecha_inicio, h.fecha_fin)}
+        </span>
+      </div>
+      <h3 className="card-titulo card-titulo-sm">
+        <Link href={`/historia/${h.id}`}>{h.titulo}</Link>
+      </h3>
+      <p className="card-rel-meta">
+        {h.n_especificas} {h.n_especificas === 1 ? "actor" : "actores"} en común
+      </p>
+    </article>
+  );
+}
+
 // ── Página ────────────────────────────────────────────────────────────────────
 
 export default async function Historia({ params }) {
@@ -213,6 +237,40 @@ export default async function Historia({ params }) {
   const secundarias = articulos.filter((a) => !a.es_ancla);
   const labels      = etiquetarAnclas(articulos);
 
+  // ── Q3: historias conectadas (story_relations, espejo dirigido) ──
+  // El grafo es espejo: reescribir_stories inserta ambas direcciones, así que
+  // filtrar por origen_id basta para traer todos los vecinos sin duplicar.
+  // Tope 50 = guarda de cordura (el hub más denso medido tiene grado 13); el
+  // recorte a 5 es de PRESENTACIÓN y vive en el render, no acá. Dos queries al
+  // estilo de la casa para no depender del hint de FK (story_relations tiene dos
+  // claves a stories).
+  const { data: relRows } = await supabase
+    .from("story_relations")
+    .select("destino_id, n_especificas, coseno")
+    .eq("origen_id", story.id)
+    .order("n_especificas", { ascending: false })
+    .order("coseno", { ascending: false })
+    .limit(50);
+
+  let relaciones = [];
+  if (relRows?.length) {
+    const destinoIds = relRows.map((r) => r.destino_id);
+    const { data: relStories } = await supabase
+      .from("stories")
+      .select("id, titulo, n_medios, n_articulos, fecha_inicio, fecha_fin")
+      .in("id", destinoIds);
+    const byId = new Map((relStories ?? []).map((s) => [s.id, s]));
+    relaciones = relRows
+      .map((r) => {
+        const s = byId.get(r.destino_id);
+        return s ? { ...s, n_especificas: r.n_especificas, coseno: r.coseno } : null;
+      })
+      .filter(Boolean); // preserva el orden de relRows (n_esp desc, coseno desc)
+  }
+
+  const relPrincipales = relaciones.slice(0, 5);
+  const relResto       = relaciones.slice(5);
+
   return (
     <>
       {/* Breadcrumb */}
@@ -251,8 +309,10 @@ export default async function Historia({ params }) {
         <h2 className="seccion-titulo">Línea de tiempo</h2>
         {/* Nota: el hilo arranca como lista CSS. SVG con curvas Bézier
             ("hilo que cuelga entre clavos") es el siguiente refinamiento visual. */}
-        <ol className="hilo-cronologico">
-          {articulos.map((a) => (
+        {/* Editorial: las 3 visibles son las más antiguas (orden cronológico asc);
+            cuándo destilar qué mostrar primero es decisión de producto futura. */}
+        <ol className={`hilo-cronologico${articulos.length > 3 ? " hilo-preview-fade" : ""}`}>
+          {articulos.slice(0, 3).map((a) => (
             <li key={a.url} className="hilo-nodo">
               <div className="hilo-nodo-meta">
                 {a.editada ? (
@@ -317,16 +377,79 @@ export default async function Historia({ params }) {
               )}
             </li>
           ))}
-
-          {/* Nodo placeholder: historia relacionada (Fase 2 avanzada) */}
-          <li className="hilo-nodo hilo-nodo-relacionada" aria-label="Historia relacionada pendiente">
-            <span className="hilo-nodo-rel-puntos">· · ·</span>
-            <span className="hilo-nodo-rel-label">
-              Historias relacionadas · Fase 2 avanzada · requiere{" "}
-              <code>story_relations</code>
-            </span>
-          </li>
         </ol>
+        {articulos.length > 3 && (
+          <details className="timeline-mas">
+            <summary>Ver {articulos.length - 3} momentos más</summary>
+            <ol className="hilo-cronologico">
+              {articulos.slice(3).map((a) => (
+                <li key={a.url} className="hilo-nodo">
+                  <div className="hilo-nodo-meta">
+                    {a.editada ? (
+                      <>
+                        <span className="hilo-hora hilo-hora-tachada">
+                          {horaCO(a.fecha_primera_captura)}
+                        </span>
+                        <span className="hilo-hora hilo-hora-nueva">
+                          {horaCO(a.fecha_ultima_captura)}
+                        </span>
+                        <span className="tag tag-editada">editada</span>
+                      </>
+                    ) : (
+                      <span className="hilo-hora">
+                        {horaCO(a.fecha_primera_captura)}
+                      </span>
+                    )}
+                    <Link
+                      href={`/medio/${a.medio_slug}`}
+                      className={`tag tag-medio medio-${a.medio_slug}`}
+                    >
+                      {a.medio_nombre}
+                    </Link>
+                    {a.seccion && (
+                      <span className="tag tag-seccion">{a.seccion}</span>
+                    )}
+                  </div>
+
+                  <div className="hilo-nodo-titulo">
+                    {a.titulo_cambio ? (
+                      <>
+                        <span className="hilo-titulo-tachado">{a.titulo_original}</span>
+                        {" "}
+                        <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
+                      </>
+                    ) : (
+                      <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
+                    )}
+                  </div>
+
+                  {/* Popup de historial de capturas (sin JS: <details>) */}
+                  {a.n_capturas > 1 && (
+                    <details className="hilo-historial">
+                      <summary>
+                        {a.n_capturas} capturas
+                        {!a.editada && " · solo cuerpo/hash"}
+                      </summary>
+                      <ul className="hilo-historial-lista">
+                        {a.capturas.map((c, i) => (
+                          <li key={c.hash_sha256}>
+                            <span className="hilo-hora">{horaCO(c.fecha_captura)}</span>
+                            <Link href={`/articulo/${c.article_id}`} className="hilo-hash">
+                              {c.hash_sha256.slice(0, 12)}…
+                            </Link>
+                            {i > 0 && c.titulo !== a.capturas[i - 1].titulo && (
+                              <span className="hilo-cambio-label"> · título cambiado</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </details>
+        )}
       </section>
 
       {/* ── VERSIONES (BENTO) ── */}
@@ -338,7 +461,7 @@ export default async function Historia({ params }) {
             y puede hacer ancla a una reacción que nombra muchos actores en lugar
             del artículo más factual. En clústeres chicos el efecto no se manifiesta.
             (Documentado en BITACORA 2026-06-16.) */}
-{anclas.length > 0 ? (
+        {anclas.length > 0 ? (
           <div className="bento-anclas">
             {anclas.map((a) => (
               <CardAncla key={a.url} articulo={a} label={labels.get(a.url)} />
@@ -351,11 +474,23 @@ export default async function Historia({ params }) {
         )}
 
         {secundarias.length > 0 && (
-          <div className="bento-secundarias">
-            {secundarias.map((a) => (
-              <CardSecundaria key={a.url} articulo={a} />
-            ))}
-          </div>
+          <>
+            <div className="bento-secundarias">
+              {secundarias.slice(0, 2).map((a) => (
+                <CardSecundaria key={a.url} articulo={a} />
+              ))}
+            </div>
+            {secundarias.length > 2 && (
+              <details className="versiones-mas">
+                <summary>Ver {secundarias.length - 2} versiones más</summary>
+                <div className="bento-secundarias">
+                  {secundarias.slice(2).map((a) => (
+                    <CardSecundaria key={a.url} articulo={a} />
+                  ))}
+                </div>
+              </details>
+            )}
+          </>
         )}
       </section>
 
@@ -385,20 +520,45 @@ export default async function Historia({ params }) {
         </div>
       </section>
 
-      {/* ── GRAFO PANORÁMICO — PLACEHOLDER ── */}
+      {/* ── HISTORIAS CONECTADAS ── */}
       <section className="historia-seccion">
         <h2 className="seccion-titulo">Historias conectadas</h2>
-        <div className="placeholder-fase">
-          <span className="placeholder-fase-label">
-            Fase 2 avanzada · requiere tabla story_relations
-          </span>
-          <p className="placeholder-fase-texto">
-            El grafo de historias relacionadas (mismo tema, distinto hecho)
-            aparece aquí. Aún no existe la tabla{" "}
-            <code>story_relations</code> — implementar después de validar el
-            clustering simple con volumen.
-          </p>
-        </div>
+        {relaciones.length === 0 ? (
+          <div className="placeholder-fase">
+            <span className="placeholder-fase-label">Fase 2 · sin conexiones</span>
+            <p className="placeholder-fase-texto">
+              El pipeline no halló otras historias que compartan suficientes
+              actores propios con esta. Una conexión aparece cuando dos historias
+              del mismo tema (distinto hecho) comparten 3+ entidades específicas.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="bento-secundarias bento-relacionadas">
+              {relPrincipales.map((h) => (
+                <CardRelacionada key={h.id} historia={h} />
+              ))}
+            </div>
+            {relResto.length > 0 && (
+              <details className="relacionadas-mas">
+                <summary>
+                  y {relResto.length}{" "}
+                  {relResto.length === 1 ? "historia más" : "historias más"}
+                </summary>
+                <ul className="relacionadas-mas-lista">
+                  {relResto.map((h) => (
+                    <li key={h.id}>
+                      <Link href={`/historia/${h.id}`}>{h.titulo}</Link>
+                      <span className="rel-mas-meta">
+                        {h.n_especificas} en común
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </>
+        )}
       </section>
     </>
   );

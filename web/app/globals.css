@@ -464,31 +464,6 @@ a { color: inherit; }
 .hilo-hash { color: var(--gris-archivo); opacity: 0.7; }
 .hilo-cambio-label { color: var(--hilo); }
 
-/* Nodo placeholder: historia relacionada */
-.hilo-nodo-relacionada::before {
-  border-style: dashed;
-  background: transparent;
-}
-.hilo-nodo-rel-puntos {
-  font-family: var(--f-mono), monospace;
-  font-size: 0.8rem;
-  color: var(--gris-archivo);
-  letter-spacing: 4px;
-  display: block;
-  margin-bottom: 4px;
-}
-.hilo-nodo-rel-label {
-  font-family: var(--f-ui), sans-serif;
-  font-size: 0.78rem;
-  color: var(--gris-archivo);
-  font-style: italic;
-}
-.hilo-nodo-rel-label code {
-  font-family: var(--f-mono), monospace;
-  font-style: normal;
-  font-size: 0.88em;
-}
-
 /* ---- Bento editorial ----------------------------------------------- */
 .bento-anclas {
   display: flex;
@@ -514,6 +489,93 @@ a { color: inherit; }
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 10px;
+}
+
+/* ── Historias conectadas (story_relations) ── */
+.bento-relacionadas {
+  /* hereda grid de .bento-secundarias; sin reglas propias por ahora */
+}
+
+.card-relacionada .card-rel-meta {
+  margin-top: 6px;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  color: var(--gris-archivo);
+}
+
+.relacionadas-mas {
+  margin-top: 14px;
+}
+.relacionadas-mas > summary {
+  cursor: pointer;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.78rem;
+  color: var(--hilo);
+}
+.relacionadas-mas[open] > summary { display: none; }
+.relacionadas-mas-lista {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.relacionadas-mas-lista li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: var(--linea);
+  padding-bottom: 6px;
+}
+.relacionadas-mas-lista li a {
+  font-size: 0.84rem;
+}
+.rel-mas-meta {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.7rem;
+  color: var(--gris-archivo);
+  white-space: nowrap;
+}
+
+/* ── Colapso de hilo cronológico ── */
+.timeline-mas {
+  margin-top: 8px;
+}
+.timeline-mas > summary {
+  cursor: pointer;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.8rem;
+  color: var(--hilo);
+  padding: 8px 0;
+  list-style: none;
+}
+.timeline-mas > summary::-webkit-details-marker { display: none; }
+.timeline-mas[open] > summary { display: none; }
+
+/* ── Colapso de versiones secundarias ── */
+.versiones-mas {
+  margin-top: 10px;
+}
+.versiones-mas > summary {
+  cursor: pointer;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.8rem;
+  color: var(--hilo);
+  padding: 8px 0;
+  list-style: none;
+}
+.versiones-mas > summary::-webkit-details-marker { display: none; }
+.versiones-mas[open] > summary { display: none; }
+
+/* ── Fade en el borde inferior del contenido visible (solo cuando hay más) ── */
+.hilo-preview-fade {
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent);
+          mask-image: linear-gradient(to bottom, black 70%, transparent);
+}
+/* Anula el fade cuando el <details> hermano está abierto (:has baseline 2023) */
+.historia-seccion:has(.timeline-mas[open]) .hilo-preview-fade {
+  -webkit-mask-image: none;
+          mask-image: none;
 }
 
 .card-header {
