@@ -41,7 +41,7 @@ NAMESPACE_STORIES = uuid.UUID("6f3a1c2e-7b4d-5a9e-8c1f-2d3e4f5a6b7c")
 # cos>=0.55 tira Beto Coral (cos 0.544); subir n_esp puede tirar Air-e.
 UMBRAL_N_ESPECIFICAS = 3      # MOTOR: específicas compartidas mínimas
 GUARDIA_COSENO_REL   = 0.50   # GUARDIA: coseno entre centroides mínimo (load-bearing)
-FRAC_GENERICA        = 0.15   # entidad en > este % de clústeres = genérica
+FRAC_GENERICA        = 0.08   # entidad en > este % de clústeres = genérica
 
 # Limpieza CONGELADA desde diag v4. MITIGACIÓN TEMPORAL: el RUIDO_DURO de conectores es
 # un parche por el NER básico de backfill. Se RETIRA con el re-backfill de NER (queda solo
@@ -67,6 +67,63 @@ GEOGRAFIA = {
     "andina","andino","orinoquía","amazonía","eje cafetero","los llanos","colombia",
     "de colombia","bogotá","bogotá d.c.",
 }
+
+ALIAS = {
+    "ee. uu": "estados unidos", "ee.uu": "estados unidos", "ee uu": "estados unidos",
+    "eeuu": "estados unidos", "estados unidos de américa": "estados unidos",
+    "trump": "donald trump",
+    "uribe": "álvaro uribe", "álvaro uribe vélez": "álvaro uribe",
+    "petro": "gustavo petro",
+    "abelardo": "abelardo de la espriella", "espriella": "abelardo de la espriella",
+    "de la espriella": "abelardo de la espriella",
+    "cepeda": "iván cepeda", "iván cepeda castro": "iván cepeda",
+    "restrepo": "josé manuel restrepo",
+    "germán": "germán vargas lleras", "germán vargas": "germán vargas lleras",
+    "sarabia": "laura sarabia",
+    "abadía": "juan carlos abadía",
+    "amaya": "carlos amaya",
+    "beto": "beto coral", "coral": "beto coral",
+    "mordisco": "iván mordisco",
+    "cne": "consejo nacional electoral",
+    "moe": "misión de observación electoral",
+    "jep": "jurisdicción especial para la paz",
+    "sgc": "servicio geológico colombiano",
+    "icbf": "instituto colombiano de bienestar familiar",
+    "dirección de investigación criminal": "dijín", "investigación criminal": "dijín",
+    "fiscalía general de la nación": "fiscalía", "fiscalía general": "fiscalía",
+    "procuraduría general de la nación": "procuraduría", "procuraduría general": "procuraduría",
+    "corte suprema de justicia": "corte suprema",
+    "sala de instrucción": "corte suprema", "sala de casación penal": "corte suprema",
+    "registraduría nacional": "registraduría",
+    "registraduría nacional del estado civil": "registraduría",
+    "policía": "policía nacional", "policía de colombia": "policía nacional",
+    "ejército": "ejército nacional",
+    "instituto de hidrología, meteorología y estudios ambientales": "ideam",
+    "meteorología y estudios ambientales": "ideam",
+}
+
+GEO_EXTRA = {
+    "estados unidos", "washington", "venezuela", "ecuador", "perú", "chile", "brasil",
+    "argentina", "bolivia", "uruguay", "paraguay", "méxico", "panamá", "costa rica",
+    "el salvador", "salvador", "guatemala", "honduras", "nicaragua", "cuba", "puerto rico",
+    "italia", "españa", "francia", "alemania", "reino unido", "inglaterra", "portugal",
+    "europa", "américa", "américa latina", "latinoamérica", "suramérica", "sudamérica",
+    "centroamérica", "norteamérica", "aragua", "caracas", "miami", "arizona", "roma",
+    "londres", "madrid", "canadá", "china", "rusia", "ucrania", "israel", "suecia",
+}
+
+_LEAD = re.compile(r"^(el|la|los|las|lo|en|de|del|al)\s+")
+
+def canon(e):
+    e = re.sub(r"\s+", " ", (e or "")).strip().lower()
+    e = re.sub(r"^[^0-9a-záéíóúñü]+", "", e)
+    e = e.strip(" .,;:¿?¡!\"'“”‘’`´")
+    for _ in range(2):
+        e2 = _LEAD.sub("", e)
+        if e2 == e:
+            break
+        e = e2
+    return ALIAS.get(e, e)
 
 def ents_rel(lista):
     """Normalización para RELACIONES (diag v3/v4): colapsa espacios + strip + lower.
@@ -299,7 +356,7 @@ def reescribir_stories(clusteres, por_id, idf):
     for ids in clusteres:
         u = set()
         for i in ids:
-            u |= ents_rel(por_id[i]["entidades"])
+            u |= {ce for e in (por_id[i]["entidades"] or []) if (ce := canon(e))}
         ents_union.append(u)
 
     n_cl = len(clusteres)
@@ -311,7 +368,7 @@ def reescribir_stories(clusteres, por_id, idf):
     GENERICAS = {e for e, c in df_cl.items() if c >= umbral_gen}
 
     def es_especifica(e):
-        return e not in RUIDO_DURO and e not in GEOGRAFIA and e not in GENERICAS
+        return e not in RUIDO_DURO and e not in GEOGRAFIA and e not in GEO_EXTRA and e not in GENERICAS
 
     # PASADA 1: stories + story_articles; stashear (sid, centroide, específicas).
     nodos = []
@@ -337,7 +394,7 @@ def reescribir_stories(clusteres, por_id, idf):
             "es_ancla": i in anclas,
         } for i in ids]).execute()
 
-        esp = {e for e in u if es_especifica(e)}
+        esp = {canon(e) for e in u if es_especifica(canon(e))}
         nodos.append((sid, centroide_de_cluster(ids, por_id), esp))
 
     # PASADA 2: aristas espejo (story_relations). Motor n_especificas, guardia coseno.
