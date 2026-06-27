@@ -110,6 +110,10 @@ function CardSecundaria({ articulo: a }) {
 // ── Página ────────────────────────────────────────────────────────────────────
 
 export default async function Historia({ params }) {
+  // ── Q1: la historia + sus representantes por URL (story_articles) ──
+  // story_articles es caché derivada del clustering: 1 fila por URL (la última
+  // captura), única fuente de los scores y es_ancla. Trae el representante
+  // COMPLETO para servir de piso si la Q2 del historial falla.
   const { data: story, error } = await supabase
     .from("stories")
     .select(`
@@ -128,30 +132,86 @@ export default async function Historia({ params }) {
 
   if (error || !story) notFound();
 
-  // Aplanar filas anidadas al shape que espera colapsarCluster
-  const capturas = (story.story_articles ?? []).map((sa) => ({
-    article_id:        sa.articles.id,
-    url:               sa.articles.url,
-    medio_slug:        sa.articles.outlets.slug,
-    medio_nombre:      sa.articles.outlets.nombre,
-    hash_sha256:       sa.articles.hash_sha256,
-    fecha_captura:     sa.articles.fecha_captura,
-    titulo:            sa.articles.titulo,
-    subtitulo:         sa.articles.subtitulo,
-    es_parcial:        sa.articles.es_parcial,
-    tipo:              sa.articles.tipo,
-    seccion:           sa.articles.seccion,
-    es_ancla:          sa.es_ancla,
-    score_neutralidad: sa.score_neutralidad,
-    score_cobertura:   sa.score_cobertura,
-    score_divergencia: sa.score_divergencia,
-  }));
+  // Scores + es_ancla viven SOLO en story_articles, indexados por URL (el átomo
+  // del clustering). Guardamos también el representante completo como fallback.
+  const metaPorUrl = new Map();
+  const representantes = [];
+  for (const sa of story.story_articles ?? []) {
+    const art = sa.articles;
+    if (!art) continue;
+    const meta = {
+      medio_slug:        art.outlets?.slug,
+      medio_nombre:      art.outlets?.nombre,
+      es_ancla:          sa.es_ancla,
+      score_neutralidad: sa.score_neutralidad,
+      score_cobertura:   sa.score_cobertura,
+      score_divergencia: sa.score_divergencia,
+    };
+    metaPorUrl.set(art.url, meta);
+    representantes.push({
+      article_id:    art.id,
+      url:           art.url,
+      hash_sha256:   art.hash_sha256,
+      fecha_captura: art.fecha_captura,
+      titulo:        art.titulo,
+      subtitulo:     art.subtitulo,
+      es_parcial:    art.es_parcial,
+      tipo:          art.tipo,
+      seccion:       art.seccion,
+      ...meta,
+    });
+  }
 
-  const articulos  = colapsarCluster(capturas);
-  const tituloH    = tituloCanonico(articulos, story.titulo);
-  const anclas     = articulos.filter((a) => a.es_ancla);
+  // ── Q2: el historial completo de ediciones ──
+  // articles es inmutable y conserva TODAS las capturas (mismo url, hash
+  // distinto = edición editorial o re-extracción nuestra). El colapso por URL
+  // del clustering (BITACORA 2026-06-23) las dejó fuera de story_articles, lo
+  // que rompió la cronología de ediciones. Las recuperamos AQUÍ, en la capa de
+  // presentación, sin tocar clustering ni esquema: colapsarCluster.js ya sabe
+  // agrupar capturas por url y detectar el cambio de título/subtítulo. Los
+  // scores se heredan del representante de cada URL (no existen por captura).
+  // Si la query falla o no devuelve nada, caemos a `representantes`.
+  const urls = [...metaPorUrl.keys()];
+  let capturas = representantes;
+
+  if (urls.length) {
+    const { data: historial, error: errH } = await supabase
+      .from("articles")
+      .select("id, url, titulo, subtitulo, fecha_captura, es_parcial, tipo, seccion, hash_sha256")
+      .in("url", urls);
+
+    if (!errH && historial?.length) {
+      const recon = historial
+        .filter((c) => metaPorUrl.has(c.url))
+        .map((c) => {
+          const m = metaPorUrl.get(c.url);
+          return {
+            article_id:        c.id,
+            url:               c.url,
+            medio_slug:        m.medio_slug,
+            medio_nombre:      m.medio_nombre,
+            hash_sha256:       c.hash_sha256,
+            fecha_captura:     c.fecha_captura,
+            titulo:            c.titulo,
+            subtitulo:         c.subtitulo,
+            es_parcial:        c.es_parcial,
+            tipo:              c.tipo,
+            seccion:           c.seccion,
+            es_ancla:          m.es_ancla,
+            score_neutralidad: m.score_neutralidad,
+            score_cobertura:   m.score_cobertura,
+            score_divergencia: m.score_divergencia,
+          };
+        });
+      if (recon.length) capturas = recon;
+    }
+  }
+
+  const articulos   = colapsarCluster(capturas);
+  const tituloH     = tituloCanonico(articulos, story.titulo);
+  const anclas      = articulos.filter((a) => a.es_ancla);
   const secundarias = articulos.filter((a) => !a.es_ancla);
-  const labels     = etiquetarAnclas(articulos);
+  const labels      = etiquetarAnclas(articulos);
 
   return (
     <>
