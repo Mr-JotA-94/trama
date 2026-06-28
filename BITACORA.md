@@ -118,6 +118,93 @@ cambios de esquema se hacen con migraciones que preservan datos.
 
 ## Deuda técnica conocida
 
+### [RESUELTO 2026-06-28] Incidente CI clustering — NameError por orden de definición de canon (2026-06-28)
+
+**Traza exacta:**
+```
+File "crawler/clustering_fase2.py", line 116, in <module>
+    RUIDO_C = {canon(x) for x in RUIDO_DURO}
+NameError: name 'canon' is not defined
+```
+El job `clustering` del cron falló en import, antes de cualquier escritura a Supabase.
+**story_relations no fue corrompido** — el delete de `reescribir_stories` vive en
+`main()`, nunca alcanzado. Estado del grafo = última corrida válida.
+
+**Causa raíz confirmada (auditada con git blame + git show):**
+Commit **6e25379** ("cambios regulares diarios de los md file", 2026-06-28) añadió
+`RUIDO_C` y `GEO_C` como comprehensions a nivel de módulo en la posición incorrecta:
+ANTES de `_LEAD` y `def canon`. Python evalúa el módulo top-to-bottom; al llegar
+a `RUIDO_C = {canon(x) for x in RUIDO_DURO}`, `canon` aún no existe → NameError.
+El mensaje del commit no mencionaba `clustering_fase2.py` (el archivo iba en el
+mismo staging junto con los MD del día). **No fue un clobber de versión** (no se
+perdió código entero), PERO tampoco fue solo un reorden: 6e25379 introdujo DOS
+cambios sobre la versión validada 9410713 — (1) añadió `RUIDO_C`/`GEO_C` (que NO
+existían en 9410713) en orden incorrecto → el NameError visible; (2) cambió
+`es_especifica` de membership cruda (`RUIDO_DURO`/`GEOGRAFIA`/`GEO_EXTRA`) a
+membership canonizada (`RUIDO_C`/`GEO_C`) — un cambio SEMÁNTICO al motor de
+relaciones (qué cuenta como específica, base de `n_esp≥3`) que NUNCA fue medido.
+Las constantes validadas (ALIAS, GEO_EXTRA, FRAC=0.08, n_esp=3, guardia=0.50,
+centroide np.mean) sí seguían presentes; lo que cambió fue la LÓGICA de exclusión.
+
+**Primer intento DESCARTADO (branch `fix/clustering-canon-order`, commit 91c8c78):**
+Reorden mínimo: mover `RUIDO_C`/`GEO_C` después de `def canon`. Se RECHAZÓ porque
+conservaba el cambio semántico no validado de `es_especifica` (membership canonizada).
+Lo cazó `git diff 9410713 fix/clustering-canon-order`: `RUIDO_C`/`GEO_C` salían como
+`+` (no existían en la versión validada) y `es_especifica` salía cambiada. El reporte
+del ejecutor decía "reorden puro, todo intacto" — verificó PRESENCIA de constantes,
+no EQUIVALENCIA de lógica.
+
+**Fix aplicado (branch `fix/clustering-restore-validado`, commit ce4af7f):**
+`git checkout 9410713 -- crawler/clustering_fase2.py` — restauración exacta a la
+versión validada. Resultado: `RUIDO_C`/`GEO_C` ELIMINADOS, `es_especifica` revertido
+a sets crudos (la forma que produjo el grafo validado de 68 aristas). Entre 9410713 y
+hoy, lo único que tocó clustering fue 6e25379, así que no se pierde nada legítimo.
+Diff neto: 1 insertion / 6 deletions. Mergeado a main por fast-forward (6e25379→ce4af7f).
+**PENDIENTE: `git push origin main`** — al cierre de esta entrada, origin/main aún
+estaba en 6e25379 (roto); el fix vivía solo en main local.
+
+**Verificación:** el archivo restaurado es byte-idéntico a 9410713, el commit cuyas
+métricas (68 aristas, hub Pastrana grado 3, andamiaje=0) ya estaban validadas. `findstr`
+confirma: cero líneas `RUIDO_C`/`GEO_C`, `es_especifica` con membership cruda. No hay
+nada nuevo que medir: es exactamente el estado validado. La próxima corrida del cron
+reproduce el grafo conocido.
+
+**Aprendizajes (dos; el segundo es el que evita el round 2):**
+1. Commitear código junto con los MD del día sin mirar el diff staged contamina main
+   con bugs silenciosos. Regla: `git diff --staged` obligatorio antes de confirmar,
+   aunque el commit "parezca" solo docs; commits de docs SEPARADOS de los de código.
+2. **El árbitro de un fix es el `git diff` contra la versión VALIDADA, no el "todo
+   intacto" del ejecutor.** Claude Code reportó "reorden puro" verificando que las
+   constantes seguían presentes; no verificó que la LÓGICA de `es_especifica` fuera
+   equivalente a la validada. No lo era. Presencia ≠ equivalencia. Para todo hotfix
+   sobre código load-bearing: diff explícito contra el último commit medido, y leerlo.
+
+**Auditoría de consistencia docs↔código (2026-06-28):** ver tabla abajo.
+
+| Afirmación (doc:sección) | Código (archivo:línea) | ¿Coincide? | Nota |
+|---|---|---|---|
+| "Grafo NO expuesto hasta el re-backfill de NER" (Arquitectura.md §6) | web/app/historia/[id]/page.js | **NO** | Re-backfill aplicado 2026-06-26; grafo expuesto 2026-06-27. Arquitectura.md no actualizada (solo Jota puede editarla) |
+| "El clustering NO está en este workflow (sigue manual)" (BITACORA Notas de operación 2026-06-23) | .github/workflows/crawler.yml:77-95 | **NO** | Clustering ES el 3er job del workflow; encadenado desde commit 3560565. La nota era correcta en su fecha, hoy es stale |
+| "FRAC_GENERICA = 0.08" (BITACORA 2026-06-27 recalibración) | clustering_fase2.py:44 | SÍ | ✓ |
+| "UMBRAL_N_ESPECIFICAS = 3" (BITACORA 2026-06-27) | clustering_fase2.py:42 | SÍ | ✓ |
+| "GUARDIA_COSENO_REL = 0.50" (BITACORA 2026-06-27) | clustering_fase2.py:43 | SÍ | ✓ |
+| "centroide_de_cluster() = np.mean" (BITACORA 2026-06-25) | clustering_fase2.py:145 | SÍ | ✓ |
+| "canon se aplica en TRES puntos: ... RUIDO_C/GEO_C canónicos" (BITACORA 2026-06-27 recalibración) | clustering_fase2.py `es_especifica` (post-restore) | **NO / CONTRADICCIÓN** | El código validado 9410713 canoniza solo DOS puntos (entrada de entidades + conteo df_cl); `es_especifica` usa sets CRUDOS. El "tercer punto" (exclusión canónica) que esa entrada describe NUNCA estuvo en el código validado — el grafo de 68 aristas se midió con exclusión cruda. 6e25379 intentó implementar ese 3er punto y rompió el import. Canonizar la exclusión es mejora SIN MEDIR (ver deuda nueva abajo), no estado validado. La entrada 2026-06-27 sobre-afirmó "3 puntos". |
+| "n_esp≥3 ∧ cos≥0.50" (Arquitectura.md §6) | clustering_fase2.py:42-43 | SÍ | ✓ |
+| "Centroide-por-medio: identificada, NO medida aún" (BITACORA Ideas 2026-06-25) | — | PARCIAL | Diagnóstico YA realizado (sesión posterior a esa entrada): 161 clústeres, 22 (14%) anclas cambian, sesgo direccional confirmado. El "NO medida" es stale; resultado en TRASPASO |
+
+### Canonizar los sets de exclusión de `es_especifica` — mejora SIN MEDIR (2026-06-28)
+Destapada por el incidente del 2026-06-28. Hoy `es_especifica` excluye contra sets
+CRUDOS (`RUIDO_DURO`/`GEOGRAFIA`/`GEO_EXTRA`); canonizarlos (excluir contra
+`{canon(x)...}`) es coherente con el resto de canon() y podría capturar formas de
+superficie que hoy escapan a la exclusión. PERO no está medido: 6e25379 lo introdujo
+sin medición y rompió el import; lo revertimos para reproducir el grafo validado, no
+porque la idea sea mala. **Cómo entra bien:** implementar en branch, correr clustering,
+comparar aristas/hub contra las 68 validadas + control de andamiaje (debe seguir en 0).
+Si sostiene o mejora, entra con datos. Mismo estatus de "propuesta a medir" que el
+split de centroide. NO tocar en caliente junto a otra cosa.
+
+
 ### Recalibración de relaciones: el problema era "qué cuenta como específica", no n_esp (2026-06-27)
 
 Partimos de TRASPASO #1 ("la limpieza de NER baja n_esp, ¿hay que bajar el umbral a 2?").
