@@ -92,7 +92,12 @@ El storage NO es el primer problema. En orden de aparición probable:
     cargando embeddings a RAM; a escala grande, búsqueda aproximada en Postgres
     evita traer miles de vectores por corrida. A escala chica, numpy es más simple
     y está bien.
-
+- **Pasada de relaciones O(clústeres²) SIN ventana temporal (2026-06-25):** story_relations
+  compara todos los pares de clústeres del archivo. C ≈ artículos/19. Hoy 137 clústeres →
+  ~9k pares, trivial (el coseno va gateado tras n_especificas). Crece cuadrático con el
+  archivo; menor en magnitud que el O(n²) de artículos, pero se suma. Mismo disparador,
+  mismo fix (índice invertido por entidad). Storage de la tabla: despreciable.
+  
 ---
 
 ## 4. Tensión inmutabilidad ↔ storage (decisión de principio, tomarla en frío)

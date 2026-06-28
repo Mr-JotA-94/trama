@@ -102,6 +102,7 @@ ALIAS = {
     "meteorología y estudios ambientales": "ideam",
 }
 
+
 GEO_EXTRA = {
     "estados unidos", "washington", "venezuela", "ecuador", "perú", "chile", "brasil",
     "argentina", "bolivia", "uruguay", "paraguay", "méxico", "panamá", "costa rica",
@@ -111,6 +112,10 @@ GEO_EXTRA = {
     "centroamérica", "norteamérica", "aragua", "caracas", "miami", "arizona", "roma",
     "londres", "madrid", "canadá", "china", "rusia", "ucrania", "israel", "suecia",
 }
+
+RUIDO_C = {canon(x) for x in RUIDO_DURO}
+GEO_C   = {canon(x) for x in (GEOGRAFIA | GEO_EXTRA)}
+
 
 _LEAD = re.compile(r"^(el|la|los|las|lo|en|de|del|al)\s+")
 
@@ -368,7 +373,7 @@ def reescribir_stories(clusteres, por_id, idf):
     GENERICAS = {e for e, c in df_cl.items() if c >= umbral_gen}
 
     def es_especifica(e):
-        return e not in RUIDO_DURO and e not in GEOGRAFIA and e not in GEO_EXTRA and e not in GENERICAS
+        return e not in RUIDO_C and e not in GEO_C and e not in GENERICAS
 
     # PASADA 1: stories + story_articles; stashear (sid, centroide, específicas).
     nodos = []

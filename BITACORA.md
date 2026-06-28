@@ -14,6 +14,26 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
 
+- **2026-06-27** — recómputo de story_relations con criterio recalibrado (NO es truncate
+  de archivo). Al correr clustering_fase2.py con las capas nuevas (canon/ALIAS/GEO_EXTRA +
+  FRAC_GENERICA=0.08), story_relations se reconstruyó (delete-then-insert, caché derivada):
+  ~101 pares / 202 filas espejo sobre 149 clústeres. El crecimiento vs la medición offline
+  (68 pares) es real, no bug: dos mega-historias estallaron entre corridas (terremoto de
+  Venezuela y formación de gabinete de De la Espriella). Validado: hub Pastrana grado 4,
+  control de andamiaje = 0 pares. articles jamás se toca; story_relations es reconstruible.
+
+- **2026-06-27** — APRENDIZAJE (regresión de cronología de ediciones). Colapsar en
+  el pipeline no exime de verificar qué capas leían las capturas SIN colapsar. El
+  colapso por URL del 2026-06-23 documentó "el historial de capturas se preserva
+  intacto" — cierto para `articles`, pero indujo a no revisar que `story_articles`
+  (lo que la vista de cronología leía) sí perdía las capturas intermedias. Resultado:
+  la cronología dejó de mostrar ediciones sin que nadie lo notara hasta semanas
+  después. Regla para el yo-futuro: cuando se introduzca una deduplicación/colapso en
+  una capa, auditar TODAS las capas aguas abajo que dependían del dato sin colapsar
+  (aquí: la vista esperaba N capturas por URL para detectar ediciones). El dato nunca
+  se pierde si el archivo es inmutable; lo que se rompe es el CAMINO del dato a la
+  vista. Buscar el camino roto, no el dato.
+
 - **2026-06-25** — migración 000010 (crea story_relations; NO toca datos de archivo).
   Tabla nueva, vacía al crear; el clustering la pobló en su corrida (137 clústeres →
   289 pares / 578 filas espejo). story_relations es CÁLCULO DERIVADO reconstruible
@@ -97,6 +117,53 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Deuda técnica conocida
+
+### Recalibración de relaciones: el problema era "qué cuenta como específica", no n_esp (2026-06-27)
+
+Partimos de TRASPASO #1 ("la limpieza de NER baja n_esp, ¿hay que bajar el umbral a 2?").
+**La pregunta estaba mal planteada.** Medido con diag_relaciones (v1→v3, read-only,
+desechable): bajar a 2 sumaba 291 aristas de pura co-mención institucional; y subir tampoco
+servía — el peor falso positivo tenía n_esp=15 (una lista de países: "La caída de Niño
+Guerrero" ↔ "voto en el exterior"). La raíz eran TRES clases de basura en lo que el motor
+contaba como específica: (1) duplicación de formas de superficie ("la procuraduría" /
+"procuraduría general de la nación" = 3 formas, 1 referente), (2) geografía extranjera
+contada como específica, (3) actores institucionales de DF medio (defensores de la patria,
+registraduría, cne) que esquivaban FRAC=0.15.
+
+**Fix (3 capas, ninguna toca n_esp ni la guardia), portado a la 2ª pasada de
+clustering_fase2.py:** canon() + ALIAS (quita artículo inicial + dicc. acotado de siglas↔
+expansión y fragmentos de nombre; NO fusiona instituciones hermanas), GEO_EXTRA (países/
+regiones/ciudades extranjeras al filtro geográfico, antes solo Colombia), FRAC_GENERICA
+0.15→0.08. canon se aplica en los TRES puntos: entrada de entidades, conteo df_cl (para que
+las genéricas por DF se cuenten bien) y sets de exclusión (RUIDO_C/GEO_C canónicos).
+
+**Medido (barrido de FRAC):** 0.15→191 aristas (aún madeja), 0.10→115, **0.08→68 (CORE 4/4)**,
+0.06→51 (CORE 3/4: rompe Calavera↔24). Por eso 0.08 es el límite: el piso lo fija una
+relación real (Calavera↔24) que descansa en {dijín, interpol, ejército nacional + el nombre
+propio "elver vicente alfonso sanabria"}; en 0.06 los institucionales se vuelven genéricos y
+queda solo el nombre → n_esp=1. Hub Pastrana 21→3. Andamiaje eliminado (control = 0).
+**Decisión: n_esp=3 y guardia 0.50 NO se mueven** (consistente con cierre 2026-06-23 y con el
+testigo Beto Coral, cos 0.589). Branch fix/relaciones-canon-frac008.
+
+**Sub-decisiones con recibo:**
+- **Air-e = FN aceptado.** Solo 2 específicas limpias (andeg + superservicios); cae bajo
+  n_esp≥3. Bajar a 2 para salvarlo reabre la madeja (El Niño↔El Niño y Chalá↔Calavera también
+  caen en 2, mezclados con co-mención del hub). Mismo patrón que Beto Coral para la guardia:
+  costo de recall medido y aceptado, no se afloja el umbral global. Revisitar solo si Fase 3
+  desambigua relaciones empresa-nombrada.
+- **Retirar RUIDO_DURO (era TRASPASO #2) sigue bloqueado, ahora MEDIDO:** 9/50 términos
+  sobreviven al NER limpio (incl. "match electoral de el espectador"). Viven en <11 clústeres,
+  así que ni FRAC=0.08 los atrapa. Retirarlo re-contaminaría n_especificas. Disparador: mejor
+  filtro de NER de cuerpo.
+- **Grafo expuesto con cap de presentación.** /historia/[id]/page.js: Q3 por origen_id (espejo
+  completo), top-5 por (n_especificas desc, coseno desc) + `<details>` "y N más". El cap de
+  in-degree en LECTURA que se contemplaba queda SUPERSEDIDO para la vista per-historia: el
+  top-5 ya contiene la densidad. Vuelve a hacer falta solo si se construye un grafo panorámico.
+
+**Aprendizaje (autocrítica):** eyeball-ear de lejos engaña. Marqué "android/google/shakealert"
+como basura de NER que tejía un FP entre dos sismos; Jota corrigió que es cobertura legítima
+del sistema de alerta sísmica de Google — entidades reales y discriminantes. El criterio se
+corrige con el dato concreto, no con la sospecha desde el título. NO se registró como deuda.
 
 ### Writes masivos uno-por-uno son frágiles — OBSERVADO (2026-06-26)
 - **Síntoma medido:** el re-backfill (2732 UPDATE uno por uno sobre conexión HTTP/2
@@ -555,6 +622,23 @@ cambios de esquema se hacen con migraciones que preservan datos.
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
+
+### Destilar la vista de historia para no saturar al lector (idea, 2026-06-27)
+
+Jota: "más adelante tendremos que destilar y limpiar para que no se sature de mucha
+información y agote al lector de entrada." La vista /historia/[id] ya colapsa por defecto
+(hilo: 3 visibles + resto; versiones: 2 + resto; conectadas: top-5 + N más), pero el criterio
+de QUÉ mostrar primero sigue siendo crudo (las 3 primeras del hilo = las más antiguas por
+orden cronológico). Cuando se llegue a esta pasada, decidir con la página enfrente: ¿primeras
+en el tiempo? ¿las de medios más divergentes? ¿resumen de Fase 3 arriba y el resto plegado?
+Es decisión de PRODUCTO, no de plumbing; no resolver en abstracto. (Quedó comentario-rastro
+en el código del hilo.)
+
+Micro-pendiente asociado: un segundo "ver menos" al FINAL del contenido largo desplegado
+(hoy el toggle queda arriba, en la posición del "ver más", por ser <summary> nativo). Ponerlo
+abajo requeriría JS de cliente — se difiere para no romper el principio cero-JS; el de arriba
+cubre el 90%. Si el contenido es tan largo que molesta volver arriba, la señal es que ESE
+clúster necesita destilado, no un botón más.
 
 ### Vía OR para reacciones entity-sparse en story_relations (idea, 2026-06-25)
 - **Observación medida:** el motor solo-n_especificas deja fuera enlaces de cos alto y
