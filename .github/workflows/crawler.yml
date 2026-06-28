@@ -73,6 +73,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python backfill_fase2.py
   clustering:
     needs: backfill         # necesita embeddings frescos; si backfill falla, no hay nada nuevo que agrupar
