@@ -10,7 +10,7 @@ TIPOS_ENT = {"PER", "ORG", "LOC", "MISC"}
 # extraccion, no de NER) — "el espectador manténgase" es un sintoma de CTA en el cuerpo.
 MEDIOS = {
     "el espectador", "el tiempo", "el colombiano", "voragine", "vorágine",
-    "las2orillas", "noticias caracol", "el espectador manténgase",
+    "las2orillas", "noticias caracol", "el espectador manténgase","la silla vacía", "la silla vacia", "lasillavacia",
 }
 
 MAX_CHARS = 60    # institucionales largas reales llegan a ~43 chars
