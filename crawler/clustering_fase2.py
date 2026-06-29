@@ -134,10 +134,23 @@ def ents_rel(lista):
     return out
 
 def centroide_de_cluster(ids, por_id):
-    """Centroide del clúster. ÚNICA fuente: la usan calcular_scores (neutralidad) y las
-    relaciones (coseno guardia). Cuando llegue el centroide-por-medio (#2) se cambia SOLO
-    aquí. Asume ids ya colapsados por URL en carga (ARQUITECTURA 2026-06-23)."""
+    """Centroide VOTO-POR-ARTÍCULO. Tras el split #2 (2026-06-28) la usa SOLO la
+    guardia coseno de relaciones (PASADA 2); su calibración FRAC=0.08/guardia=0.50
+    se midió contra ESTE centroide, por eso NO se toca. La neutralidad/ancla usa
+    centroide_neutralidad. Asume ids ya colapsados por URL en carga (ARQUITECTURA 2026-06-23)."""
     return np.mean([np.asarray(por_id[i]["embedding"]) for i in ids], axis=0)
+
+def centroide_neutralidad(ids, por_id):
+    """Centroide UN-VOTO-POR-MEDIO, SOLO para neutralidad/ancla en calcular_scores.
+    Promedia primero dentro de cada medio, luego entre medios: un medio de alto
+    volumen ya no arrastra el centro (fix #2; diag 2026-06-28: 23 anclas cambian,
+    de-sesgo hacia medios subrepresentados como Las2orillas). NO la usa la guardia
+    de relaciones — esa sigue con centroide_de_cluster (voto-por-artículo)."""
+    por_medio = {}
+    for i in ids:
+        por_medio.setdefault(por_id[i]["outlet_id"], []).append(
+            np.asarray(por_id[i]["embedding"]))
+    return np.mean([np.mean(v, axis=0) for v in por_medio.values()], axis=0)
 
 # ---------------------------------------------------------------------
 # Carga
@@ -295,7 +308,7 @@ def calcular_scores(ids, por_id, idf):
     anclas: set de ids ancla (principal + divergente).
     ancla_principal: id de la card ancla principal (la que ganó el gate)."""
     vecs = {i: np.asarray(por_id[i]["embedding"]) for i in ids}
-    centroide = centroide_de_cluster(ids, por_id)
+    centroide = centroide_neutralidad(ids, por_id)
 
     # Entidades del clúster (unión), para cobertura
     ents_cluster = set()
