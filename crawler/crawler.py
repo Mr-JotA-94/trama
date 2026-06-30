@@ -332,6 +332,13 @@ COLA_PROMOCIONAL = [
     "alianza estratégica con the new york times",
     "regístrese en nuestros boletines",
     "regístrate en nuestros boletines",
+    "regístrate en nuestros boletines",
+    # RTVC: promo de sitio (línea "síguenos" + tweet de ratings de Señal
+    # Colombia). Cortar desde el inicio del bloque evita inyectar "elecciones
+    # presidenciales 2026" en cada nota. Validado read-only sobre 30 notas del
+    # news-sitemap: DUROS=0. Emoji primero (corte limpio), sin-emoji de respaldo.
+    "📢 entérate de lo que pasa en colombia",
+    "entérate de lo que pasa en colombia",
 ]
 
 
