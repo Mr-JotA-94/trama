@@ -11,6 +11,7 @@ TIPOS_ENT = {"PER", "ORG", "LOC", "MISC"}
 MEDIOS = {
     "el espectador", "el tiempo", "el colombiano", "voragine", "vorágine",
     "las2orillas", "noticias caracol", "el espectador manténgase","la silla vacía", "la silla vacia", "lasillavacia",
+    "RTVC", "RTVC Noticias", "Señal Colombia",
 }
 
 MAX_CHARS = 60    # institucionales largas reales llegan a ~43 chars

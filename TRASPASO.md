@@ -2,8 +2,8 @@
 
 > Dáselo a un chat nuevo para retomar sin releer conversaciones. Léelo junto con
 > ARQUITECTURA.md (plan completo) y BITACORA.md (decisiones y deuda).
-> Última actualización: **2026-06-28**.
-> >>> CAMBIO: fecha actualizada de 2026-06-27 a 2026-06-28.
+> Última actualización: **2026-06-29** (post-verificación La Silla Vacía).
+
 
 ## Quién soy y cómo trabajamos
 Soy Jota (Johan). Claude es "Claudio". Reglas que NO se pierden:
@@ -62,19 +62,15 @@ Pastrana grado 21→3, andamiaje=0. CORE intacto. n_esp≥3 y guardia 0.50 intac
 `<details>` "y N más". Server Component, cero JS. Hilo colapsable (3+resto),
 versiones (2+resto), fade con gradiente en estado colapsado.
 
-**>>> CAMBIO: INCIDENTE CI CLUSTERING — RESUELTO EN MAIN LOCAL, PENDIENTE PUSH (2026-06-28).**
-El job `clustering` del cron falló con NameError. Causa raíz: commit **6e25379**
-("cambios regulares diarios de los md file") hizo DOS cosas sobre la versión validada
-9410713: añadió `RUIDO_C`/`GEO_C` como comprehensions de módulo antes de `def canon`
-(→ NameError en import) Y cambió `es_especifica` a membership canonizada (cambio
-semántico al motor de relaciones, NO medido). **story_relations NO se corrompió** (el
-crash es en import, antes del delete de `reescribir_stories`). Grafo congelado en la
-última corrida válida. **Fix: `fix/clustering-restore-validado` (commit ce4af7f) —
-restauración exacta a 9410713** (`git checkout 9410713 -- ...`): elimina `RUIDO_C`/
-`GEO_C`, revierte `es_especifica` a crudo. Mergeado a main LOCAL por fast-forward.
-**PENDIENTE: `git push origin main`** (origin sigue en 6e25379 roto). Se descartó el
-reorden 91c8c78 porque conservaba el cambio no validado de `es_especifica`; lo cazó el
-diff contra 9410713 (detalle en BITACORA).
+**INCIDENTE CI CLUSTERING — RESUELTO Y PUSHEADO, PIPELINE VERDE (2026-06-28).**
+`6e25379` ("cambios regulares diarios de los md file") añadió `RUIDO_C`/`GEO_C` antes
+de `def canon` (→ NameError en import) Y cambió `es_especifica` a membership canonizada
+(cambio semántico NO medido). story_relations no se corrompió (crash en import).
+**Fix: restauración exacta a 9410713 (`fix/clustering-restore-validado`, ce4af7f)** —
+elimina `RUIDO_C`/`GEO_C`, revierte `es_especifica` a crudo. Mergeado y **pusheado a
+origin/main**. Cron verde confirmado (corrida real: 165 clústeres, 128 pares). Se
+descartó el reorden 91c8c78 porque conservaba el cambio no validado; lo cazó el diff
+contra 9410713 (detalle en BITACORA).
 
 **>>> CAMBIO: DIAGNÓSTICO DE CENTROIDE-POR-MEDIO REALIZADO.**
 El TRASPASO anterior lo listaba como "próximo paso pendiente". Ya medido sobre
@@ -92,45 +88,52 @@ El TRASPASO anterior lo listaba como "próximo paso pendiente". Ya medido sobre
   para `calcular_scores`; `centroide_de_cluster` (voto-por-artículo) se queda intacta
   para la guardia coseno de relaciones (su calibración FRAC=0.08/guardia=0.50 se hizo
   contra ese centroide; moverla es otra unidad medida por separado).
-- **NO implementado aún** — es la próxima unidad de trabajo tras resolver el incidente.
+- **IMPLEMENTADO Y VALIDADO (2026-06-28).** `centroide_neutralidad` añadida; `calcular_scores`
+  conmutado a ella; relaciones intacta (PASADA 2 sigue en `centroide_de_cluster`). Validación
+  sobre prod: **relaciones NO se movió (128 pares)** y las 23 anclas se de-sesgaron — Trump/Irán
+  pasó a Las2orillas, Niño Guerrero a El Colombiano (prueba directa de que medios de bajo volumen
+  ganan ancla). Costo medido y aceptado: ~5 clústeres pequeños pierden cobertura de ancla (deuda
+  abajo). **Branch `fix/centroide-neutralidad-split`. PENDIENTE: merge a main + push** — el cron
+  corre main; si no se mergea, la próxima corrida revierte los scores y re-sesga La Silla Vacía.
 
 **Banco:** ~2700+ artículos embebidos (entidades limpias post re-backfill). ~149 stories
 en la corrida 2026-06-27 (ver nota de conteo en el diagnóstico de centroide arriba; el
 conteo exacto es el de la última corrida verde del cron).
 
+**LA SILLA VACÍA ACTIVADA, VERIFICADA Y CONFIABLE (2026-06-29).** 6º medio, archivando en prod
+(cron verde). Config validada sobre datos capturados reales: `extraccion='trafilatura'`,
+`nivel_paywall='abierto'` (es_parcial=false en todas), `regla_seccion={"metodo":"primer_segmento"}`
+(en-vivo→`en-vivo`, red-de-expertos→`null` por guard de 2-guiones, como se predijo).
+**Verificación concluyente:** el footer de Cruz Roja (RCF) y el disclaimer de opinión NO son
+boilerplate — son contenido editorial legítimo (servicio de Restablecimiento de Contactos Familiares
+en cobertura de desastre; disclaimer propio de columnas de opinión). Archivarlos es coherente con
+"archivar lo públicamente visible". Unidad CERRADA, sin pendientes. RTVC NO activado (ver cola).
+
 **ÁTOMO = URL, UUID ESTABLE, ANCLA, FEED↔TÍTULO-CITA, FEED PAGINADO, NER LIMPIO** — vigente.
 
 ## PRÓXIMO PASO cuando retomemos
 
->>> CAMBIO: lista reordenada y actualizada. El #1 anterior ("CONFIRMAR MERGES") se
-resolvió parcialmente (9410713 ya está en main) pero fue reemplazado por el incidente.
+>>> La Silla Vacía cerrada (verificada y confiable, 2026-06-29). Sin pendientes abiertos de Fase 2.
 
-1. **URGENTE — `git push origin main`.** El fix (ce4af7f) está mergeado en main LOCAL
-   pero origin sigue en 6e25379 (roto); el cron corre origin cada 6h y seguirá fallando
-   hasta el push. Tras pushear, la próxima corrida restaura story_relations y el grafo
-   del front vuelve al estado vivo. Verificar que el cron siguiente completa los tres
-   jobs en verde. ANTES del `git add` de docs: sacar `diag_centroide_por_medio.py` de
-   `crawler/` y añadir `crawler/diag_*.py` a `.gitignore` (sigue untracked en el árbol).
+1. **RTVC — activación (unidad aparte).** Trafilatura/abierto, pero diag midió 20% de ruido
+   (boilerplate de navegación sin og:title, descartado por keep=NO) y el feed RSS solo expone 10
+   ítems. Antes de activar: muestra por sitemap (no el RSS de 10) y confirmar que keep=sí no traen
+   cola de boilerplate. Posible filtro extra como el de video de El Tiempo.
 
-2. **Implementar centroide-por-medio (SPLIT)** — diagnóstico hecho, decisión tomada,
-   unidad de trabajo lista. Cambio en `calcular_scores`: añadir `centroide_neutralidad`
-   (un-voto-por-medio) para elegir el ancla; `centroide_de_cluster` no se toca.
-   Re-validar a ojo las 22 historias donde cambia el ancla. Hacerlo ANTES de activar
-   medios nuevos (más volumen asimétrico agrava el sesgo).
-
-3. **Activar La Silla Vacía / RTVC** (feeds verificados) tras el centroide-por-medio.
-   Al activar: agregar su nombre a MEDIOS en ner_filtro.py.
-
-4. Fase 3 (LLM decidido: NVIDIA NIM).
+2. **Fase 3 (LLM: NVIDIA NIM / llama-3.3-70b / Groq fallback).** Tras activar RTVC (banco de 7
+   medios) para que el batch LLM corra una vez sobre el set completo.
 
 ## Deudas activas (detalle en BITACORA)
 
 >>> CAMBIO: se añaden las deudas del incidente y del diagnóstico de centroide.
 
-- **[RESUELTO local, pendiente push] Job clustering roto en main** (2026-06-28) —
-  6e25379 añadió `RUIDO_C`/`GEO_C` mal ordenados (NameError) + cambió `es_especifica`
-  a canonizada (no validado). Fix por restauración a 9410713: `fix/clustering-restore-validado`
-  (ce4af7f). Falta `git push origin main`.
+- **[RESUELTO Y PUSHEADO] Job clustering roto en main** (2026-06-28) — 6e25379 (RUIDO_C/GEO_C
+  + es_especifica). Fix `ce4af7f` (restauración a 9410713), en origin/main, cron verde.
+- **[RESUELTO Y PUSHEADO] Centroide-por-medio (SPLIT)** (2026-06-29) — `centroide_neutralidad`
+  validada (128 pares intactos, 23 anclas de-sesgadas), mergeada a main, Actions verde.
+- **[NUEVA] Varianza de ancla en clústeres pequeños bajo un-voto** (2026-06-28) — el split hace
+  perder cobertura de ancla en ~5 clústeres de 3-4 artículos (un-voto promedia 2-3 puntos, más
+  ruidoso). Aceptado: clústeres de bajo tráfico. Disparador si molesta: medir una guarda de tamaño N.
 - **[NUEVA] Canonizar exclusión de `es_especifica` — mejora SIN MEDIR** (2026-06-28) —
   revertida en el incidente; reintroducir solo con medición (aristas/hub vs 68 validadas).
 - **Centroide-por-medio (SPLIT) no implementado** (diagnóstico 2026-06-28) — 22 anclas
@@ -164,6 +167,18 @@ Dos discrepancias STALE encontradas (no bloquean trabajo, pero leer con concienc
    workflow desde commit 3560565. La nota era correcta cuando se escribió.
 
 ## Ideas registradas (no son scope ahora)
+
+>>> Ideas de la sesión 2026-06-28/29:
+- **Texto de servicio idéntico entre notas (footer RCF, disclaimer de opinión)** — VIGILANCIA, no
+  acción. Es contenido legítimo, se archiva. Solo si algún día liga clústeres NO relacionados por
+  texto compartido, medir; hoy queda bajo el gate n_especificas≥3, sin evidencia de cruce.
+- **La Silla Vacía: opinión vs reportería.** `/red-de-expertos/` es columna de opinión, no
+  noticia (ej. "espacio de debate que no compromete la opinión de La Silla Vacía"). A futuro,
+  filtro de sección para separarla. Además `red-de-expertos` (2 guiones) cae a sección=null
+  por el guard de `primer_segmento` (≤1 guion) — refinar la regla si se quiere capturar esa sección.
+- **RTVC: feed RSS limitado a 10 ítems + boilerplate.** Su `rss.xml` solo expone 10; para
+  cobertura real hace falta su sitemap. Y 20% de la muestra fue chrome de navegación.
+
 
 >>> CAMBIO: sección nueva con dos ideas de esta sesión.
 

@@ -14,6 +14,20 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
 
+### La Silla Vacía: activado, verificado y confiable (2026-06-29)
+6º medio. Verificación post-cron (8 capturas reales) confirmó la config: trafilatura,
+nivel_paywall abierto (es_parcial=false en todas), regla_seccion primer_segmento
+(en-vivo→'en-vivo', red-de-expertos→null por el guard de ≤1 guion). Cuerpo real limpio.
+La columna `final` del query reveló dos textos repetidos —footer de Cruz Roja (RCF) en notas
+de desastre/migración y disclaimer de opinión en columnas red-de-expertos— que en una primera
+lectura clasifiqué como boilerplate a quitar. CORRECCIÓN (Jota): son contenido editorial
+legítimo (el RCF es un servicio real publicado en cobertura de desastre; el disclaimer es propio
+de las columnas). Archivarlos es coherente con "archivar lo públicamente visible"; quitarlos haría
+el archivo MENOS fiel. No se tocan. La preocupación residual (texto idéntico ligando clústeres
+distintos) quedó como vigilancia, no deuda: sub-umbral del gate n_especificas≥3, sin medición que
+indique cruce. Aplica el propio aprendizaje del proyecto: no clasificar señal como ruido sin leer
+el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
+
 - **2026-06-27** — recómputo de story_relations con criterio recalibrado (NO es truncate
   de archivo). Al correr clustering_fase2.py con las capas nuevas (canon/ALIAS/GEO_EXTRA +
   FRAC_GENERICA=0.08), story_relations se reconstruyó (delete-then-insert, caché derivada):
