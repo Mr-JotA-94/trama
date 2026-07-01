@@ -2,7 +2,7 @@
 // Server Component: consulta en servidor, revalidación c/5 min.
 // Con searchParams la página se renderiza dinámicamente en cada request.
 //
-// Filtros disponibles: q (texto por título de artículo), desde/hasta (fecha_inicio).
+// Filtros disponibles: q (texto por título de artículo), desde/hasta (fecha_fin, actividad).
 // Orden: sort=reciente|medios|cobertura (default: reciente → fecha_fin desc)
 // Paginación: page=N, 20 por página (solo rama SIN BÚSQUEDA).
 //
@@ -19,6 +19,7 @@ import { supabase } from "@/lib/supabase";
 import { tituloCanonico } from "@/lib/colapsarCluster";
 import { Buscador } from "@/app/components/Buscador";
 import ArticuloSinHistoria from "@/app/components/ArticuloSinHistoria";
+import { PresetsFecha } from "@/app/components/PresetsFecha";
 
 export const revalidate = 300;
 
@@ -79,10 +80,10 @@ function ListaHistorias({ stories, titulos }) {
   );
 }
 
-// Aplica filtros de fecha a un query builder de stories
+// Aplica filtros de fecha sobre fecha_fin (actividad del clúster, no inicio)
 function aplicarFechas(query, desde, hasta) {
-  if (desde) query = query.gte("fecha_inicio", `${desde}T00:00:00`);
-  if (hasta) query = query.lte("fecha_inicio", `${hasta}T23:59:59`);
+  if (desde) query = query.gte("fecha_fin", `${desde}T00:00:00`);
+  if (hasta) query = query.lte("fecha_fin", `${hasta}T23:59:59`);
   return query;
 }
 
@@ -192,6 +193,7 @@ export default async function Historias({ searchParams }) {
       return (
         <>
           <Buscador {...buscadorProps} q={q} />
+          <PresetsFecha filtros={filtros} action="/historias" />
           <p className="buscar-resultado-sub">Sin resultados para «{q}».</p>
         </>
       );
@@ -216,6 +218,7 @@ export default async function Historias({ searchParams }) {
       return (
         <>
           <Buscador {...buscadorProps} q={q} />
+          <PresetsFecha filtros={filtros} action="/historias" />
           <ArticuloSinHistoria articulos={matchArticles} />
         </>
       );
@@ -243,6 +246,8 @@ export default async function Historias({ searchParams }) {
       return (
         <>
           <Buscador {...buscadorProps} q={q} />
+          <PresetsFecha filtros={filtros} action="/historias" />
+          <ControlOrden sort={sort} filtros={filtros} />
           <p className="buscar-resultado-sub">
             Sin historias para «{q}»{desde || hasta ? " en ese rango de fechas" : ""}.
           </p>
@@ -263,6 +268,7 @@ export default async function Historias({ searchParams }) {
         <p className="buscar-resultado-sub">
           {stories.length} {stories.length === 1 ? "historia" : "historias"} para «{q}»
         </p>
+        <PresetsFecha filtros={filtros} action="/historias" />
         <ControlOrden sort={sort} filtros={filtros} />
         <ListaHistorias stories={stories} titulos={titulos} />
       </>
@@ -297,7 +303,11 @@ export default async function Historias({ searchParams }) {
       <>
         <Buscador {...buscadorProps} />
         {desde || hasta ? (
-          <p className="buscar-resultado-sub">Sin historias en ese rango de fechas.</p>
+          <>
+            <PresetsFecha filtros={filtros} action="/historias" />
+            <ControlOrden sort={sort} filtros={filtros} />
+            <p className="buscar-resultado-sub">Sin historias en ese rango de fechas.</p>
+          </>
         ) : (
           <div className="placeholder-fase">
             <span className="placeholder-fase-label">Fase 2 · en construcción</span>
@@ -327,6 +337,7 @@ export default async function Historias({ searchParams }) {
         {count ?? 0} {(count ?? 0) === 1 ? "historia" : "historias"}
         {hayFiltroActivo ? " en el rango seleccionado" : " detectadas"}
       </p>
+      <PresetsFecha filtros={filtros} action="/historias" />
       <ControlOrden sort={sort} filtros={filtros} />
       <ListaHistorias stories={stories} titulos={titulos} />
       <Paginacion page={page} totalPaginas={totalPaginas} filtros={filtros} sort={sort} />

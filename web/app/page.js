@@ -5,6 +5,7 @@
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { Buscador } from "@/app/components/Buscador";
+import { PresetsFecha } from "@/app/components/PresetsFecha";
 
 export const revalidate = 300;
 
@@ -88,10 +89,14 @@ export default async function Registro({ searchParams }) {
     return (
       <>
         {buscador}
-        {q || medio || tipo || seccion || desde || hasta
-          ? <p className="buscar-resultado-sub">Sin resultados para los filtros aplicados.</p>
-          : <p>El archivo aún no tiene capturas. El crawler corre cada 6 horas.</p>
-        }
+        {q || medio || tipo || seccion || desde || hasta ? (
+          <>
+            <PresetsFecha filtros={filtros} action="/" />
+            <p className="buscar-resultado-sub">Sin resultados para los filtros aplicados.</p>
+          </>
+        ) : (
+          <p>El archivo aún no tiene capturas. El crawler corre cada 6 horas.</p>
+        )}
       </>
     );
   }
@@ -102,6 +107,7 @@ export default async function Registro({ searchParams }) {
   return (
     <>
       {buscador}
+      <PresetsFecha filtros={filtros} action="/" />
       {hayFiltroActivo && (
         <p className="buscar-resultado-sub">
           {articulos.length} {articulos.length === 1 ? "captura" : "capturas"}
