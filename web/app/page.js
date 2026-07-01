@@ -89,10 +89,14 @@ export default async function Registro({ searchParams }) {
     return (
       <>
         {buscador}
-        {q || medio || tipo || seccion || desde || hasta
-          ? <p className="buscar-resultado-sub">Sin resultados para los filtros aplicados.</p>
-          : <p>El archivo aún no tiene capturas. El crawler corre cada 6 horas.</p>
-        }
+        {q || medio || tipo || seccion || desde || hasta ? (
+          <>
+            <PresetsFecha filtros={filtros} action="/" />
+            <p className="buscar-resultado-sub">Sin resultados para los filtros aplicados.</p>
+          </>
+        ) : (
+          <p>El archivo aún no tiene capturas. El crawler corre cada 6 horas.</p>
+        )}
       </>
     );
   }

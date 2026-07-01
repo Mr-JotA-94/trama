@@ -193,6 +193,7 @@ export default async function Historias({ searchParams }) {
       return (
         <>
           <Buscador {...buscadorProps} q={q} />
+          <PresetsFecha filtros={filtros} action="/historias" />
           <p className="buscar-resultado-sub">Sin resultados para «{q}».</p>
         </>
       );
@@ -217,6 +218,7 @@ export default async function Historias({ searchParams }) {
       return (
         <>
           <Buscador {...buscadorProps} q={q} />
+          <PresetsFecha filtros={filtros} action="/historias" />
           <ArticuloSinHistoria articulos={matchArticles} />
         </>
       );
@@ -244,6 +246,8 @@ export default async function Historias({ searchParams }) {
       return (
         <>
           <Buscador {...buscadorProps} q={q} />
+          <PresetsFecha filtros={filtros} action="/historias" />
+          <ControlOrden sort={sort} filtros={filtros} />
           <p className="buscar-resultado-sub">
             Sin historias para «{q}»{desde || hasta ? " en ese rango de fechas" : ""}.
           </p>
@@ -299,7 +303,11 @@ export default async function Historias({ searchParams }) {
       <>
         <Buscador {...buscadorProps} />
         {desde || hasta ? (
-          <p className="buscar-resultado-sub">Sin historias en ese rango de fechas.</p>
+          <>
+            <PresetsFecha filtros={filtros} action="/historias" />
+            <ControlOrden sort={sort} filtros={filtros} />
+            <p className="buscar-resultado-sub">Sin historias en ese rango de fechas.</p>
+          </>
         ) : (
           <div className="placeholder-fase">
             <span className="placeholder-fase-label">Fase 2 · en construcción</span>
