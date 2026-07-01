@@ -5,6 +5,7 @@
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { Buscador } from "@/app/components/Buscador";
+import { PresetsFecha } from "@/app/components/PresetsFecha";
 
 export const revalidate = 300;
 
@@ -102,6 +103,7 @@ export default async function Registro({ searchParams }) {
   return (
     <>
       {buscador}
+      <PresetsFecha filtros={filtros} action="/" />
       {hayFiltroActivo && (
         <p className="buscar-resultado-sub">
           {articulos.length} {articulos.length === 1 ? "captura" : "capturas"}

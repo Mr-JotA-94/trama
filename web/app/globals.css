@@ -137,6 +137,8 @@ a { color: inherit; }
 .medio-el-espectador { --c-medio: #0f7c7c; }  /* verdeazul */
 .medio-el-tiempo     { --c-medio: #1f6fb2; }  /* azul      */
 .medio-el-colombiano { --c-medio: #7a4a21; }  /* marrón    */
+.medio-la-silla-vacia { --c-medio: #a63a6f; }  /* magenta-vino */
+.medio-rtvc          { --c-medio: #455a75; }  /* pizarra   */
 
 .tag-medio {
   background: var(--c-medio, var(--tinta));
@@ -311,6 +313,16 @@ a { color: inherit; }
 }
 .historias-orden a:first-child { border-left-width:1px; }
 .historias-orden a.activo { background:var(--tinta); color:var(--papel); }
+
+/* ---- Presets de rango de fecha ---------------------------------------- */
+.presets-fecha { display:flex; gap:0; margin:.5rem 0 1rem; flex-wrap:wrap; }
+.presets-fecha a {
+  padding:.3rem .7rem; border:1px solid var(--tinta); border-left-width:0;
+  font-family:var(--f-mono, monospace); font-size:.85rem; text-decoration:none;
+  color:var(--tinta); background:var(--papel);
+}
+.presets-fecha a:first-child { border-left-width:1px; }
+.presets-fecha a.activo { background:var(--tinta); color:var(--papel); }
 
 /* ---- Paginación del feed ------------------------------------------- */
 .paginacion { display:flex; gap:0; margin:1.5rem 0; flex-wrap:wrap; align-items:center; }

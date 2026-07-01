@@ -19,6 +19,7 @@ import { supabase } from "@/lib/supabase";
 import { tituloCanonico } from "@/lib/colapsarCluster";
 import { Buscador } from "@/app/components/Buscador";
 import ArticuloSinHistoria from "@/app/components/ArticuloSinHistoria";
+import { PresetsFecha } from "@/app/components/PresetsFecha";
 
 export const revalidate = 300;
 
@@ -263,6 +264,7 @@ export default async function Historias({ searchParams }) {
         <p className="buscar-resultado-sub">
           {stories.length} {stories.length === 1 ? "historia" : "historias"} para «{q}»
         </p>
+        <PresetsFecha filtros={filtros} action="/historias" />
         <ControlOrden sort={sort} filtros={filtros} />
         <ListaHistorias stories={stories} titulos={titulos} />
       </>
@@ -327,6 +329,7 @@ export default async function Historias({ searchParams }) {
         {count ?? 0} {(count ?? 0) === 1 ? "historia" : "historias"}
         {hayFiltroActivo ? " en el rango seleccionado" : " detectadas"}
       </p>
+      <PresetsFecha filtros={filtros} action="/historias" />
       <ControlOrden sort={sort} filtros={filtros} />
       <ListaHistorias stories={stories} titulos={titulos} />
       <Paginacion page={page} totalPaginas={totalPaginas} filtros={filtros} sort={sort} />
