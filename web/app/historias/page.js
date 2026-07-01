@@ -2,7 +2,7 @@
 // Server Component: consulta en servidor, revalidación c/5 min.
 // Con searchParams la página se renderiza dinámicamente en cada request.
 //
-// Filtros disponibles: q (texto por título de artículo), desde/hasta (fecha_inicio).
+// Filtros disponibles: q (texto por título de artículo), desde/hasta (fecha_fin, actividad).
 // Orden: sort=reciente|medios|cobertura (default: reciente → fecha_fin desc)
 // Paginación: page=N, 20 por página (solo rama SIN BÚSQUEDA).
 //
@@ -80,10 +80,10 @@ function ListaHistorias({ stories, titulos }) {
   );
 }
 
-// Aplica filtros de fecha a un query builder de stories
+// Aplica filtros de fecha sobre fecha_fin (actividad del clúster, no inicio)
 function aplicarFechas(query, desde, hasta) {
-  if (desde) query = query.gte("fecha_inicio", `${desde}T00:00:00`);
-  if (hasta) query = query.lte("fecha_inicio", `${hasta}T23:59:59`);
+  if (desde) query = query.gte("fecha_fin", `${desde}T00:00:00`);
+  if (hasta) query = query.lte("fecha_fin", `${hasta}T23:59:59`);
   return query;
 }
 
