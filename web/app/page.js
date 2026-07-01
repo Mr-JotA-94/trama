@@ -62,7 +62,7 @@ export default async function Registro({ searchParams }) {
 
   const { data: articulos, error } = await query;
 
-  const filtros = { medio, tipo, seccion, desde, hasta };
+  const filtros = { q, medio, tipo, seccion, desde, hasta };
 
   const buscador = (
     <Buscador

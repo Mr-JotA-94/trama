@@ -162,7 +162,7 @@ export default async function Historias({ searchParams }) {
   const sort  = (searchParams?.sort  ?? "reciente").trim();
   const page  = Math.max(1, parseInt(searchParams?.page ?? "1", 10) || 1);
 
-  const filtros = { desde, hasta };
+  const filtros = { q, desde, hasta, sort };
 
   const buscadorProps = {
     action: "/historias",
