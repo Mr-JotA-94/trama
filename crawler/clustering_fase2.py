@@ -355,14 +355,41 @@ def calcular_scores(ids, por_id, idf):
     return scores, anclas, por_central[0]
 
 # ---------------------------------------------------------------------
-# Escritura (borra y reconstruye)
+# Escritura (upsert de stories + reconstrucción de derivados)
 # ---------------------------------------------------------------------
 def reescribir_stories(clusteres, por_id, idf):
-    # Borrado de derivados (NO toca articles). Orden por FK:
-    # relations -> story_articles -> stories.
+    # sid por clúster, calculado UNA vez (uuid_estable es determinista: mismo
+    # clúster -> mismo id). Se necesita antes de tocar la BD para saber qué
+    # stories existentes ya no corresponden a ningún clúster de esta corrida.
+    sids = [uuid_estable(ids, por_id) for ids in clusteres]
+    sids_actuales = set(sids)
+    # Paginado igual que cargar_articulos(): PostgREST capa las lecturas (~1000
+    # filas); sin esto, pasadas ~1000 stories la poda de huérfanas se trunca y
+    # las que caen fuera de la primera página nunca se borran.
+    existentes = set()
+    desde = 0
+    while True:
+        lote = sb.table("stories").select("id").range(desde, desde + 999).execute().data
+        if not lote:
+            break
+        existentes.update(f["id"] for f in lote)
+        desde += 1000
+    huerfanas = list(existentes - sids_actuales)
+
+    # Borrado de derivados (NO toca articles). story_relations/story_articles se
+    # recomputan enteros cada corrida (scores y aristas cambian aunque la story
+    # sobreviva) — delete-then-insert total sigue siendo aceptable ahí: ninguna
+    # tabla externa tiene FK hacia ellas (deuda ya registrada en BITACORA,
+    # aceptada, fuera de alcance de esta unidad).
+    # `stories` YA NO se borra entera: eso es lo que rompía la identidad estable
+    # (uuid5) y el FK de analyses en el caso común. Se PODA de forma acotada:
+    # solo las huérfanas (ids que ya no salen de ningún clúster de esta corrida).
+    # Esta poda acotada es el único punto donde el ON DELETE SET NULL de
+    # analyses.story_id entra en juego.
     sb.table("story_relations").delete().not_.is_("origen_id", "null").execute()
     sb.table("story_articles").delete().not_.is_("article_id", "null").execute()
-    sb.table("stories").delete().not_.is_("id", "null").execute()
+    for k in range(0, len(huerfanas), 500):
+        sb.table("stories").delete().in_("id", huerfanas[k:k + 500]).execute()
 
     # Uniones de entidades por clúster (para genéricas-por-DF de CLÚSTER).
     ents_union = []
@@ -383,21 +410,20 @@ def reescribir_stories(clusteres, por_id, idf):
     def es_especifica(e):
         return e not in RUIDO_DURO and e not in GEOGRAFIA and e not in GEO_EXTRA and e not in GENERICAS
 
-    # PASADA 1: stories + story_articles; stashear (sid, centroide, específicas).
+    # PASADA 1: stories (upsert) + story_articles; stashear (sid, centroide, específicas).
     nodos = []
-    for ids, u in zip(clusteres, ents_union):
+    for sid, ids, u in zip(sids, clusteres, ents_union):
         scores, anclas, ancla_principal = calcular_scores(ids, por_id, idf)
         fechas = [cuando(por_id[i]) for i in ids]
-        sid = uuid_estable(ids, por_id)
 
-        sb.table("stories").insert({
+        sb.table("stories").upsert({
             "id": sid,
             "titulo": por_id[ancla_principal]["titulo"],
             "fecha_inicio": min(fechas).isoformat(),
             "fecha_fin": max(fechas).isoformat(),
             "n_articulos": len(ids),
             "n_medios": len({por_id[i]["outlet_id"] for i in ids}),
-        }).execute()
+        }, on_conflict="id").execute()
 
         sb.table("story_articles").insert([{
             "story_id": sid, "article_id": i,
