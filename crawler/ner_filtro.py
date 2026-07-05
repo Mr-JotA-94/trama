@@ -8,11 +8,13 @@ TIPOS_ENT = {"PER", "ORG", "LOC", "MISC"}
 # Medios del proyecto: ORG reales que ligan por FUENTE, no por hecho. Lista CERRADA.
 # Ampliar SOLO al activar un medio nuevo. NO crecer con boilerplate (eso es deuda de
 # extraccion, no de NER) — "el espectador manténgase" es un sintoma de CTA en el cuerpo.
-MEDIOS = {
+# Auto-normalizado a minúscula: entidad_valida() compara contra t.lower(), así que
+# un medio nuevo agregado con cualquier capitalización nunca vuelve a escapar el filtro.
+MEDIOS = {m.lower() for m in {
     "el espectador", "el tiempo", "el colombiano", "voragine", "vorágine",
-    "las2orillas", "noticias caracol", "el espectador manténgase","la silla vacía", "la silla vacia", "lasillavacia",
+    "las2orillas", "noticias caracol", "el espectador manténgase", "la silla vacía", "la silla vacia", "lasillavacia",
     "RTVC", "RTVC Noticias", "Señal Colombia",
-}
+}}
 
 MAX_CHARS = 60    # institucionales largas reales llegan a ~43 chars
 MAX_TOKENS = 8    # guardia anti-oracion; las institucionales mas largas vistas tienen <=7 tokens
