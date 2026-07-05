@@ -363,7 +363,17 @@ def reescribir_stories(clusteres, por_id, idf):
     # stories existentes ya no corresponden a ningún clúster de esta corrida.
     sids = [uuid_estable(ids, por_id) for ids in clusteres]
     sids_actuales = set(sids)
-    existentes = {fila["id"] for fila in sb.table("stories").select("id").execute().data}
+    # Paginado igual que cargar_articulos(): PostgREST capa las lecturas (~1000
+    # filas); sin esto, pasadas ~1000 stories la poda de huérfanas se trunca y
+    # las que caen fuera de la primera página nunca se borran.
+    existentes = set()
+    desde = 0
+    while True:
+        lote = sb.table("stories").select("id").range(desde, desde + 999).execute().data
+        if not lote:
+            break
+        existentes.update(f["id"] for f in lote)
+        desde += 1000
     huerfanas = list(existentes - sids_actuales)
 
     # Borrado de derivados (NO toca articles). story_relations/story_articles se
