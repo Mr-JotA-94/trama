@@ -14,6 +14,38 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
 
+### FK de analyses.story_id: creado con ON DELETE SET NULL (migración 000013, 2026-07-05)
+
+Migración `20260705000013_analyses_story_id_set_null.sql` ejecutada en el editor de
+Supabase y espejada en /supabase/migrations/ (doble flujo). Cambia esquema, no borra
+datos (analyses estaba vacía).
+
+Hallazgo que motivó la migración: `analyses.story_id` NO tenía FK a día de hoy. La
+migración 000001 lo creó apuntando a la `stories` vieja (esquema pre-Fase-2); la 000008
+hizo `drop table stories cascade` para reemplazar esa tabla, y el CASCADE se llevó por
+delante el FK de analyses. Nadie lo volvió a enlazar. Estado real antes del fix: peor
+que la landmine RESTRICT original — una story borrada dejaba story_id apuntando a un id
+inexistente EN SILENCIO, sin error.
+
+La migración usa un bloque DO auto-descubridor: busca en pg_constraint cualquier FK de
+analyses.story_id→stories (con el nombre que tenga), lo dropea si existe, y agrega
+siempre `analyses_story_id_fkey ... ON DELETE SET NULL`. Correcto sin importar cuál de
+los dos estados (FK viejo residual o sin FK) tuviera la base viva. Sin IF NOT EXISTS.
+
+Por qué SET NULL y no CASCADE: `clustering_fase2.py` recomputa stories cada 6h. CASCADE
+borraría todos los analyses (Fase 3, caros de generar vía LLM) cada vez que su story se
+re-semilla o disuelve — inaceptable. SET NULL conserva el texto del análisis; solo
+pierde el enlace, re-derivable por article_id.
+
+Precheck ejecutado antes del ADD (analyses vacía → cero huérfanas → ADD CONSTRAINT
+válido sin fallar la validación de filas). Verificado post-migración:
+`confdeltype='n'` para analyses_story_id_fkey.
+
+NOTA lateral verificada, no un descuido: analyses_article_id_fkey quedó en 'a' (NO
+ACTION). Es correcto — el artículo es inmutable y nunca se borra, así que el análisis
+debe morir con su artículo o impedir su borrado, no quedar huérfano. Consciente, para
+cuando se diseñe Fase 3.
+
 ### La Silla Vacía: activado, verificado y confiable (2026-06-29)
 6º medio. Verificación post-cron (8 capturas reales) confirmó la config: trafilatura,
 nivel_paywall abierto (es_parcial=false en todas), regla_seccion primer_segmento
@@ -131,6 +163,72 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 ---
 
 ## Deuda técnica conocida
+
+
+### [RESUELTO 2026-07-05] Filtro anti-autorreferencia de RTVC era código muerto (case-sensitivity en MEDIOS)
+
+Síntoma: las 3 entradas de RTVC en `MEDIOS` (ner_filtro.py) — "RTVC", "RTVC Noticias",
+"Señal Colombia" — se agregaron con capitalización original, pero `entidad_valida()`
+compara `t.lower() in MEDIOS`. "rtvc" nunca estaba en el set (solo "RTVC" exacto), así
+que el filtro no atrapaba ninguna auto-mención de RTVC. Código muerto desde el commit
+que activó RTVC.
+
+Impacto: entidades de auto-referencia de fuente sin filtrar pueden ligar clústeres por
+FUENTE en vez de por hecho — mismo patrón ya resuelto para los otros 8 nombres. Insumo
+del motor de n_especificas, así que ensucia los clústeres que Fase 3 analizará.
+
+Fix (Opción B, defensiva): el set se auto-normaliza en su definición
+(`MEDIOS = {m.lower() for m in {...}}`), de modo que agregar un medio nuevo con
+cualquier capitalización no vuelve a escapar el filtro. Elimina la CLASE de bug, no solo
+la instancia — relevante porque la propia doc instruye "al activar un medio nuevo,
+agregar su nombre a MEDIOS". Fase A confirmó un único consumidor de MEDIOS (ner_filtro.py
+línea 32) y que ningún uso depende de la capitalización original, así que reescribir el
+set entero era seguro. Rama `fix/medios-case-insensitive`, en main.
+
+Lección de proceso: al reescribir un set load-bearing, la validación debe cubrir TODOS
+los literales, no solo los nuevos. El `git diff` autoritativo (11 literales intactos,
+único cambio adicional un espacio en blanco) es el gate, no el auto-reporte de la
+herramienta ni el resumen pegado en el chat (que llegó con corrupción de copy-paste).
+
+
+### [RESUELTO 2026-07-05] analyses.story_id sin FK — landmine silenciosa de Fase 3
+
+(Ver detalle de la migración en "Operaciones sobre datos", 2026-07-05.) Resumen de la
+deuda: el recompute-total de clustering borraba `stories` cada 6h; el día que Fase 3
+escribiera la primera fila en analyses con story_id poblado, la siguiente corrida habría
+fallado al borrar stories (o, en el estado real sin FK, habría dejado story_id colgando
+sin error). Determinístico. Resuelto con FK ON DELETE SET NULL + migración de
+`reescribir_stories` a UPSERT.
+
+Lección: `ON DELETE CASCADE` como respuesta refleja habría sido PEOR que el bug — en un
+patrón de recompute-total, cascade borra todos los analyses cada 6h. Siempre revisar el
+patrón de escritura antes de elegir la constraint.
+
+
+### [PARCIALMENTE RETIRADA 2026-07-05] delete-then-insert no transaccional del clustering
+
+Actualiza la entrada original (2026-06-23). `stories` ya NO se borra-y-reinserta: pasó a
+UPSERT on_conflict=id, lo que preserva la identidad uuid5 estable y evita romper el FK de
+analyses en el caso común. La poda de stories es ahora ACOTADA (solo huérfanas:
+existentes − sids_actuales, en lotes de 500). La lectura de `existentes` se paginó a
+~1000 filas (mismo patrón que la carga de artículos) tras detectar que un `.select()`
+sin paginar truncaba la poda pasadas ~1000 stories y acumulaba historias fantasma en
+silencio — misma clase de bug que la unidad venía a arreglar; lo cazó la revisión del
+diff, no el dry-run (el stub in-memory no modelaba el tope de 1000 hasta que se amplió).
+
+VIGENTE: `story_relations` y `story_articles` siguen con delete-total-then-insert cada
+corrida (se recomputan enteros; ninguna tabla externa tiene FK hacia ellas). Esa parte
+de la deuda no transaccional queda aceptada y fuera de alcance.
+
+
+### [NUEVA 2026-07-05] Groq fallback de Fase 3 sin modelo de reemplazo
+
+`llama-3.3-70b-versatile` (el modelo del fallback Groq documentado) se decomisiona el
+2026-08-16. El primario en NVIDIA NIM (`meta/llama-3.3-70b-instruct`) es de otro catálogo
+y no se ve afectado, pero el supuesto previo de "mismo model ID en ambos proveedores"
+queda invalidado. Decisión: diferido hasta empezar Fase 3 o hasta acercarse al 2026-08-16,
+lo que llegue primero. Al elegir reemplazo, validarlo de forma independiente (salida JSON
+estricta en español, temperatura baja, sobre artículos reales) antes de adoptarlo.
 
 ### [RESUELTO 2026-06-28] Incidente CI clustering — NameError por orden de definición de canon (2026-06-28)
 
@@ -723,6 +821,25 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
+
+
+### Upgrade de navegabilidad y estética (propuesta 2026-07-02, POST estructura principal)
+
+Propuesta de auditoría, NO implementada. Para cuando la estructura principal del proyecto
+esté cerrada. Priorizado por esfuerzo/impacto, todo dentro del sistema de diseño cerrado
+(tokens --tinta/--papel/--hilo, Archivo Black + Source Serif 4 + IBM Plex Mono, esquinas
+rectas, sin gradientes/sombras, cero-JS de cliente):
+
+- **Filtro por medio en /historias** — esfuerzo BAJO (mismo patrón Server Component que
+  ControlOrden/PresetsFecha), impacto ALTO con 7 medios activos. El candidato #1.
+- **Ícono "ⓘ" contextual con `<details>`/`<summary>` nativo** — destraba explicar al
+  lector los scores/técnicas de Fase 3 sin romper cero-JS. Sinergia con Fase 3.
+- **Nav móvil oculto <560px** — deuda de navegación ya conocida; revisar al abordar esto.
+- **Hilo rojo curvo (SVG)** — identidad visual, impacto funcional bajo. Lo último.
+- **Búsqueda paginada** — ya en deudas; encaja aquí como mejora de navegación.
+
+Cada uno es su propia unidad, con su Tier y su cierre. NO mezclar con la ruta crítica de
+Fase 3.
 
 ### Destilar la vista de historia para no saturar al lector (idea, 2026-06-27)
 
