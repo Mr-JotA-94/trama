@@ -341,6 +341,15 @@ COLA_PROMOCIONAL = [
     "entérate de lo que pasa en colombia",
 ]
 
+# Teasers de "notas relacionadas": línea-widget que apunta a OTRA nota,
+# no al cuerpo de ESTA. Filtro por PREFIJO de línea (no substring: "te puede
+# interesar" puede aparecer legítimo dentro de una frase) y drop-line (no
+# corte-a-fin: un teaser puede quedar intercalado entre párrafos). Exclusivo
+# de RTVC hoy (medido: 0 en los otros 6 medios), pero seguro como global.
+TEASERS = (
+    "lee además:", "lee también:", "te puede interesar:",
+    "no te lo pierdas:", "también puedes leer:",
+)
 
 def limpiar_contenido(texto: str, titulo: str = "") -> str:
     # 1) Corte de cabecera: todo lo anterior al título es chrome del sitio.
@@ -365,6 +374,8 @@ def limpiar_contenido(texto: str, titulo: str = "") -> str:
         if ls and len(ls) <= 8 and all(c in "0123456789:/ " for c in ls):
             continue
         if any(m in ls.lower() for m in BOILERPLATE):
+            continue
+        if ls.lower().startswith(TEASERS):
             continue
         lineas.append(l)
     return "\n".join(lineas).strip()

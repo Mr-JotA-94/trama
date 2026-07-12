@@ -14,6 +14,18 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
 
+### [2026-07-06] RTVC validado en vivo + filtro de teasers en crawler
+- Validación read-only de RTVC (57 art.): extraccion=trafilatura, es_parcial=0,
+  secciones correctas, sin_procesar=0. Banco de 7 medios cerrado.
+- Hallazgo: 35/57 con teasers de notas relacionadas (Lee además:/Te puede interesar:/
+  etc.), 15/57 con embeds de tweets. El marcador COLA_PROMOCIONAL de RTVC no los cubría.
+- Fix (rama fix/rtvc-teasers-crawler): tupla TEASERS + drop-line por PREFIJO (startswith,
+  con colon) en limpiar_contenido. NO corte-a-fin, NO substring. Medido antes: 0
+  colisiones en los otros 6 medios (4459 art.) → seguro como global. Validado local.
+  Solo hacia adelante: los 57 existentes conservan cola (inmutabilidad).
+- Tweets incrustados: NO se filtran (pueden ser evidencia legítima — citas de actores).
+  Vigilancia.
+
 ### FK de analyses.story_id: creado con ON DELETE SET NULL (migración 000013, 2026-07-05)
 
 Migración `20260705000013_analyses_story_id_set_null.sql` ejecutada en el editor de
@@ -164,6 +176,203 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 
 ## Deuda técnica conocida
 
+### [2026-07-12] `arrastre` VALIDADO — primer código de alta confianza de v1 (MEDIDO)
+Método: banco fijo extendido (3 arrastre_pos + 2 arrastre_neg, texto real, dedup), DeepInfra
+Llama-3.3-70B, temp 0.15, --repetir 3 por artículo. Umbral fijado ANTES de correr: pasa si
+todos los positivos marcan y todos los negativos quedan vacíos, estable en las 3 corridas, con
+grounding verbatim.
+Resultado: FN=0 (los 3 positivos marcan arrastre en 3/3 corridas, spans idénticos), FP=0 (los 2
+negativos vacíos en 3/3), grounding 1/1 OK en todos, 0 alucinadas. La EXCLUSIÓN DURA de `unánime`
+mordió (el-tiempo "votación unánime, equivalentes a 54.743 votos" → vacío) y el color deportivo
+("es evidente que se ve mejor que su rival") no disparó.
+Def. congelada: prueba operativa (tapá el marcador de consenso; ¿queda HECHO verificable o TESIS
+en disputa?) + exclusión dura (`unánime`-como-descriptor-de-hecho nunca es arrastre) + regla de voz
+(voz del medio ≠ cita de actor) + 3 ejemplos SÍ / 3 NO de texto real.
+Decisión: `arrastre` entra a v1 como código de alta confianza; puede encabezar el análisis y
+disparar el termómetro. Supersede, para arrastre, la entrada 2026-07-11 "otros 5 códigos inestables
+por definición floja": la inestabilidad era falta de ejemplos SÍ/NO, no límite del modelo.
+Reactivar/re-medir SI: se cambia el prompt base, el proveedor, o se detecta un FP en producción.
+
+### [2026-07-12] Predictor de supervivencia por-código CORREGIDO (aprendizaje de método)
+Contexto: al abrir la unidad se agrupó a atribucion_difusa/arrastre/titular_enganoso/falsa_dicotomia/
+miedo como "5 códigos de superficie (morfológicos)" que sobrevivirían por no depender del juicio
+contextual que hundió a encuadre. La medición REFUTA esa premisa: arrastre EXIGE juicio contextual
+(distinguir "hecho verificable" de "tesis en disputa" es contextual, no morfológico) y aun así pasó
+limpio. Y atribucion_difusa, que se había descartado como "contextual → out", es en realidad el
+gemelo estructural de arrastre.
+Aprendizaje real: el predictor de si un código es domesticable por prompt en el 70B NO es
+morfológico-vs-contextual. Es **¿el código tiene un set de exclusiones PEQUEÑO y CONVERGENTE?**
+· arrastre: sí (una exclusión dura, `unánime`-como-hecho) → converge → pasa.
+· encuadre: no (fenómeno natural → cultura → atrocidad, cada exclusión parcha un caso y abre otro,
+  whack-a-mole) → diverge → baja-confianza.
+Implicación para el triaje pendiente: atribucion_difusa (exclusión candidata: sourcing legítimo)
+merece probe; miedo ("desproporción" = juicio abierto, no convergente) se predice baja-confianza;
+titular_enganoso queda fuera por ser otra clase de claim (titular↔cuerpo), no por el modelo.
+Nota de honestidad: el descarte previo de atribucion_difusa fue apurado; se corrige aquí con dato.
+
+### [2026-07-12] `encuadre` no domesticable por prompt en 70B — degradado a baja-confianza
+Síntoma (MEDIDO, banco fijo de 6 en banco_fase3.txt, DeepInfra Llama-3.3-70B, temp 0.15,
+1 corrida/artículo): tres versiones de prompt, el error se DESPLAZA sin reducirse.
+  · v3 (definición "palabras cargadas" + prueba operativa): marca la atrocidad como carga del
+    medio — el-espectador 40f1846d dispara 4 encuadres sobre "torturas/asesinatos/violaciones de
+    DDHH", que son el NOMBRE del delito, no color. FP grave.
+  · v4 (+ exclusión de gravedad + exclusión cultural + refuerzo argumento≠encuadre): MATA la
+    atrocidad (40f1846d 0) y conserva TP legítimos de RTVC ("flagelo", "defendió con vehemencia").
+    PERO deja FP en fenómeno natural (Sahara 91d4ac69: 4, "ambiente más seco", "situación de
+    emergencia") y en obra cultural (Calixto 4, sin bajar). La exclusión cultural NO mordió.
+  · v5A (compuerta de agencia: "solo hay encuadre si se caracteriza la conducta de un actor con
+    agencia"): mata clima/cultura por diseño PERO RESUCITA la atrocidad — 40f1846d 0→7, porque en
+    un fallo judicial SÍ hay actores con agencia (guerrilleros, militares, tribunal), la compuerta
+    da "procede" y reabre la puerta a marcar los nombres de los delitos.
+Causa: el modelo aplica de forma fiable la distinción MORFOLÓGICA (¿la palabra es el nombre del
+hecho o color añadido encima?) pero NO la CONTEXTUAL (¿existe un hecho público en disputa que se
+esté inclinando?). Esa segunda exige un juicio de contexto que el 70B no sostiene con consistencia;
+cada exclusión por dominio parcha un caso y abre otro. Confirma la predicción de TRASPASO
+(2026-07-11): el enfoque per-prompt no separa fiable epíteto-que-tiñe de las demás familias.
+Corolario medido: las ALUCINADA subieron con v4/v5A (citas recortadas: "macrocaso 01/03", "un paso
+trascendental") — corrobora la deuda de borde-de-cita ya registrada; no es contenido inventado.
+Decisión: se CONGELA el v4 como versión de referencia (es la mejor medida: mata el FP más peligroso
+—atrocidad— y conserva TP reales; sus residuales clima/cultura son molestos pero mucho menos
+graves). `encuadre` pasa a BAJA-CONFIANZA: NO encabeza el análisis de v1 ni dispara el termómetro.
+NO se hace un v6: el umbral de corte se fijó antes de correr y el resultado lo cruzó. Reactivar SOLO
+con un enfoque distinto (ver Ideas: clasificador dedicado / dos pasadas), no con otra versión de
+prompt. El banco fijo queda para regresión futura.
+
+### [2026-07-11] `encuadre` es caja de sastre — fix PARCIAL medido; necesita subtipos
+Contexto: se probó la hipótesis de que el sobre-marcado venía de atribución (cita-de-actor).
+REFUTADA con diag_atribucion.py: las 6 frases del caso RTVC estaban en VOZ DEL MEDIO (sin
+comillas/«»/"según X"/verbo de dicción). Hallazgo real: "noticia ⇒ neutral" es FALSO — RTVC
+(estatal) editorializa, que es justo lo que Trama existe para exponer. El bug verdadero: `encuadre`
+absorbe cláusulas argumentativas completas en opinión (evidencia: citas largas, no epítetos).
+Fix aplicado (find/replace en el SYSTEM del diag de artículo): definición con PRUEBA OPERATIVA
+("quita el término valorativo; si queda un hecho neutro era encuadre, si queda una tesis/condicional
+NO lo es") + 3 FP confirmados como ejemplos NO. Resultado MEDIDO (temp 0.15, banco: RTVC + opinión
+La Silla + control Las2orillas/Calixto): control neutral limpio; cargados del medio sobreviven
+("flagelo", "con vehemencia", "avance crucial"); PERO 2 de 3 FP de opinión SIGUEN colándose.
+Conclusión honesta: mejora parcial. El enfoque per-prompt en un 70B no separa fiable epíteto-que-
+tiñe-un-hecho de cláusula-argumentativa en opinión densa. NO es error de redacción; es límite.
+Nota: temp=0 EMPEORA (mode collapse a encuadre, mete cláusulas enteras) → se mantiene 0.15.
+Decisión: `encuadre` necesita SUBTIPOS o umbral de densidad — rediseño de taxonomía, no one-liner.
+Reactivar: próximo paso #1.
+
+### [2026-07-11] Los otros 5 códigos son inestables por definición floja
+Síntoma: en opinión, miedo/falsa_dicotomia/arrastre aparecen y desaparecen entre corridas; a
+temp 0.15 el rango oscila. Causa: a diferencia de `encuadre`, no tienen ejemplos SÍ/NO en el
+prompt → el modelo titubea en el borde. Sospecha medida (no confirmada): parte de lo que marcan
+en el borde son FP (p.ej. "no es si… sino cómo…" marcado como falsa_dicotomia es lo OPUESTO a la
+definición). Decisión: reforzar definiciones (ejemplos SÍ/NO) es la sub-unidad siguiente, aparte
+de encuadre (una variable a la vez). Reactivar: próximo paso #2.
+
+### [2026-07-11] Representante por "más largo" surface el peor ejemplo (proxy tosco)
+Síntoma: condensar.py con REPRESENTANTE="largo" elige, entre 5 encuadres, la cláusula más larga —
+justo la que menos parece encuadre (p.ej. RTVC muestra "el mecanismo más robusto…" en vez de "un
+flagelo…"). "Corto" tampoco es fiable (agarra "un complejo panorama político", el borderline).
+Decisión: aceptado como default provisional; la selección fiable del representante es un mini-
+problema de ranking → Idea, no esta unidad.
+
+### [2026-07-11] `tipo` poco fiable entre medios — sub-clasificación, no realidad
+Medido (query tipo×medio): El Espectador concentra el 98.3% de 'opinion'; El Tiempo y El Colombiano
+salen con 0% de opinión, lo cual NO es real (publican columnas a diario) — no las capturamos/
+clasificamos como tal. Impacto en Fase 3: NULO (la detección de técnicas es tipo-agnóstica; se
+confirmó que una "noticia" RTVC editorializa y una opinión marca técnicas sin depender del rótulo).
+Importa para: presentación/expectativa en front, features futuras que ramifiquen por tipo, y
+muestreo limpio para nuestras pruebas (hoy no podemos sacar 'opinion' de casi ningún medio).
+Decisión: DEUDA, no acción. Engancha con clasificador de tipo (Las2orillas/Vorágine) y filtro
+opinión (La Silla). Reactivar: cuando una feature dependa de `tipo` o se quiera análisis por tipo.
+
+### [2026-07-11] Proveedor Fase 3: DeepInfra PRIMARIO, NIM fallback — decidido y validado (con caveats)
+Decisión: DeepInfra (meta-llama/Llama-3.3-70B-Instruct, precisión completa) como PRIMARIO;
+NIM (meta/llama-3.3-70b-instruct) FALLBACK; Groq DEPRECADO. Supersede la decisión
+NIM-primario del 2026-06-19. Motivo: NIM intermitente (504/WinError, medido); Groq con tope
+diario bajo + modelo en decomisión 2026-08-16; Gemini 2.5 Flash-Lite EVALUADO y descartado
+(percentil ~19 de inteligencia, insuficiente para grounding fino con FP casi-cero tolerado).
+Validación (art 0c1deb55, RTVC, noticia JEP, --repetir 3, DeepInfra CONFIRMADO por print):
+conteo estable 5-5-5, grounding 5/5·3/5·5/5, 0 alucinaciones de CONTENIDO, sin resets tipo
+NIM. Costo efectivo medido ~$0.10/$0.32 por millón (más barato que el estimado; full
+precision alcanza, NO hace falta Turbo/FP8). Pronóstico: batch incremental ~$1–2/mes,
+backfill <$1 una vez → el costo NO es el gate de la fase.
+CAVEAT 1 (medido): las 2 "ALUCINADA" de la corrida 2 fueron la MISMA frase groundeada pero
+RECORTADA en el borde ("con vehemencia", "un mecanismo más robusto") → fallan el check de
+subcadena verbatim SIN ser error de contenido. El modelo es estable en QUÉ marca, inestable
+en DÓNDE corta la cita. Implicación batch: tolerancia de borde de cita o pedir la frase
+completa, o habrá alucinadas fantasma. (Registrada aparte como su propia deuda.)
+CAVEAT 2 (cobertura parcial): validado en UNA noticia; falta el lado "debe marcar"
+(opinión/columna).
+Fallback = DECISIÓN, no mecanismo: el failover automático DeepInfra→NIM NO está construido;
+se implementa al construir el batch (Tier 3). Hoy solo conmutación manual por LLM_PROVIDER.
+Cambio de código: diag_fase3_articulo.py recibió rama `deepinfra` (con defaults de base_url
+y model) + línea `Provider: {PROVIDER} | modelo: {MODEL_ID}`, manteniendo las 3 ramas
+alcanzables. (Diag desechable, no commiteado.)
+Reactivar/re-medir SI: DeepInfra falla sostenido, o al construir el batch.
+
+### [2026-07-11] Sobre-marcado voz-del-medio vs cita-de-actor — gap central de técnicas
+Síntoma (medido): art 0c1deb55 es tipo=noticia y disparó 5 `encuadre` con grounding limpio.
+Varias son CITA INSTITUCIONAL de la JEP reproducida por el medio ("un avance crucial en la
+lucha contra la impunidad", "un paso trascendental para la consolidación de la paz estable y
+duradera", "el mecanismo más robusto..."), NO voz editorial del medio. Una sí es voz del
+medio ("defendió con vehemencia").
+Causa: el prompt v3 marca lenguaje valorativo sin distinguir QUIÉN lo enuncia. Reproducir la
+valoración de un actor citado ≠ el medio encuadrando. RTVC es estatal (parte puede ser
+editorialización legítima), pero las citas institucionales son sobre-marcado.
+Impacto: ALTO. Un falso positivo estable y bien-groundeado sigue siendo FP y viola "un FP
+cuesta más que 10 FN". Construir el batch sobre este prompt inundaría el producto de FP.
+Decisión: NO construir batch hasta cerrar este gap. Es el próximo paso #1. NO es de proveedor.
+Reactivar: inmediato (próxima unidad). Banco: los 3 clústeres constantes + 1 opinión/columna.
+
+### [2026-07-11] DeepInfra recorta la cita → ALUCINADA fantasma en el check verbatim
+Síntoma: ver Caveat 1 arriba. El grounding (subcadena exacta ≥15 chars) marca ALUCINADA una
+frase cuyo contenido SÍ existe, solo que el modelo la devolvió recortada.
+Decisión: no arreglar en el diag (desechable). El BATCH debe manejarlo: tolerancia de borde
+(p.ej. match por prefijo/ventana) o instruir "copia la frase completa". No filtrar por
+verbatim estricto sin esto, o se descartan técnicas reales.
+Reactivar: al construir el batch (Tier 3).
+
+### [2026-07-11] diag_fase3_prompt.py: rama de provider rota (NIM inalcanzable)
+Síntoma: líneas 30-39 — default PROVIDER="deepinfra"; el `else` comentado "# nvidia
+(default)" en realidad lee DEEPINFRA_*. No hay rama NIM: cualquier valor ≠ groq cae en
+DeepInfra. NIM inalcanzable desde este script.
+Causa: hack previo a medias hacia DeepInfra (documentación contradice código — el patrón de
+6e25379).
+Impacto: no se puede sacar baseline NIM desde el script de clúster; y `resumen_neutral` (que
+SOLO este script produce) no es conmutable de proveedor.
+Decisión: NO tocar ahora (esta unidad usó el script de ARTÍCULO, con las 3 ramas correctas +
+print). Arreglar ANTES de correr el de clúster para observar resumen_neutral.
+Reactivar: al retomar resumen_neutral/omisión.
+
+### [2026-07-11] diag_fase3_articulo.py: el veredicto de varianza mide conteo, no grounding
+Síntoma: `--repetir` reporta "ESTABLE (±1)" comparando CONTEOS (5-5-5) pero ignora la
+estabilidad del GROUNDING (5/5·3/5·5/5). La métrica que importa —¿las citas aguantan verbatim
+entre corridas?— no se reporta.
+Decisión: mejora menor pendiente del diag (desechable), no urge. Anotado para no confiar en
+el veredicto a ojo.
+
+### [2026-07-06] 2 autoref RTVC — aceptada, medida, permanente
+Síntoma: 2 art. de RTVC pre-fix del filtro NER traen "RTVC Noticias" en entidades.
+Causa: embebidos con el filtro roto (antes del fix 2026-07-05); el cron no los re-toca
+(embedding no-nulo) ni el crawler los re-captura (hash sin cambio). Impacto MEDIDO: nulo
+para clustering — solo 2 notas del MISMO medio la portan, y el motor salta pares
+intra-medio antes de pesar entidades → aporte a compuertas = 0. Residual cosmético en
+score_cobertura. Decisión: NO arreglar. Reactivar SI: re-NER dirigido a rtvc por otra razón.
+
+### [2026-07-06] Omisión en Fase 3 sin validar — posible replanteo de diseño
+Síntoma: el prompt v3 detectó 0 omisiones en 3 clústeres distintos (JEP 5 medios,
+empalme 5, Uribe 7 art. completos), pese a grounding limpio en TÉCNICAS (4/5–6/6).
+Causa probable (hipótesis, leída de Arquitectura §6): el clustering agrupa por MISMO
+HECHO con dos compuertas en AND (IDF≥20 + coseno≥0.70). Esa cohesión hace que los
+miembros cuenten los mismos hechos centrales → poca omisión intra-clúster. La omisión
+fuerte rompe la similitud y el clustering separa esos artículos antes de que Fase 3 los
+vea. Implicación: "omisión entre versiones del mismo hecho" es estructuralmente más rara
+de lo que asumió la taxonomía §5. NO es bug del prompt. Decisión: replantear si "omisión"
+pertenece al nivel INTER-clúster (story_relations) en vez de intra. Sin acción hasta
+decidir con cabeza fría. Reactivar: al retomar Fase 3, antes de construir el batch.
+
+### [2026-07-06] Escala de Fase 3 sin medir — gate de la fase
+El batch de Fase 3 no se puede dimensionar sin medir: nº de clústeres ≥3 medios, tokens
+por clúster, cabida en rate limits. MEDIDO esta sesión: NIM 40rpm sin tope de tokens
+(candidato a batch completo) pero con 504 de disponibilidad intermitentes; Groq estable
+y rápido pero free tier con tope diario bajo (~visto agotar a mitad con 2 corridas) →
+inviable para batch completo, sí como fallback puntual. Decisión pendiente: batch-completo
+vs incremental. Reactivar: es el próximo paso #1.
 
 ### [RESUELTO 2026-07-05] Filtro anti-autorreferencia de RTVC era código muerto (case-sensitivity en MEDIOS)
 
@@ -822,6 +1031,48 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
+### [2026-07-12] `encuadre` por enfoque distinto — post prompt-engineering
+El prompt único falló porque mezcla dos tareas que el 70B no hace juntas: EXTRAER el candidato
+valorativo (lo hace bien) y JUZGAR el contexto (¿hecho público en disputa atribuible a un actor?
+— no fiable). Enfoque a explorar cuando se retome: dos pasadas — (1) candidatos por léxico
+valorativo, alta cobertura; (2) verificación separada del contexto, prompt corto y enfocado, o un
+clasificador dedicado. NO es scope de v1. `encuadre` entra a v1 como baja-confianza o fuera del
+feed público.
+
+### [2026-07-11] Unidad de PRESENTACIÓN de Fase 3 (post-extracción, determinista)
+Separación confirmada: el LLM EXTRAE átomos groundeados (exhaustivo); el CÓDIGO condensa para el
+humano (span de atención corto). Prototipado hoy: condensar.py (colapso 1 representante + ×N por
+código, orden por severidad; validado en 3 artículos reales). Pendientes de la unidad: técnicas
+dominantes por conteo; TERMÓMETRO rojo/amarillo/verde DETERMINISTA (densidad de técnicas
+groundeadas × severidad, jamás color "sentido" por el LLM — infalsificable); FRASE-RESUMEN
+groundeada tipo "parece editorial argumentativo…" (derivada de las técnicas, no libre); DISCLOSURE
+del prompt + disclaimer IA, ELEVADO A PRINCIPIO (publicar veredictos de IA sobre opacidad mediática
+sin revelar el método sería la misma opacidad que Trama critica). Va DESPUÉS de extracción confiable.
+
+### [2026-07-11] Selección de representante como problema de ranking
+"Más largo/más corto" es proxy tosco. Elegir el epíteto más claro entre N encuadres es ranking
+(p.ej. por longitud de la porción valorativa, densidad de calificativos, o score de "epíteto-idad").
+Sub-problema de la unidad de presentación.
+
+### [2026-07-11] Expansión deliberada de la taxonomía — NO es cambio de display
+Un top-5 con nombres nuevos ("Framing moral", "Urgencia histórica", "Apelación a autoridad") NO es
+la taxonomía actual (6 códigos) y no trae grounding → generarlo libre sería fabricación, justo lo que
+Fase 3 combate. Si la taxonomía se queda corta, expandirla es proyecto calibrado: cada código con
+ejemplos SÍ/NO, grounding verbatim y medición de FP/FN. No se mezcla con la capa de presentación.
+
+### [2026-07-06] Grounding como métrica permanente + filtro de producción
+El validador de grounding (evidencia debe existir verbatim en la fuente) no solo valida:
+en producción, filtrar las entradas ALUCINADA antes de escribir a analyses convierte un
+prompt con recall alto + precisión imperfecta en salida limpia. El sistema es robusto a
+un prompt imperfecto. Idea: registrar grounding accuracy por corrida como métrica de
+salud de Fase 3. (No construir framework de evaluación completo ahora — scope de más.)
+
+### [2026-07-06] Comparación de modelos como Fase 3.5
+Con el prompt v3 como banco (constante), comparar modelos free tier (NIM Llama 3.3,
+Groq, Qwen, GPT-OSS) por grounding accuracy + hallucination rate + coste/latencia.
+Fusionar con la decisión del sucesor de Groq (decomiso 2026-08-16). Solo DESPUÉS de
+cerrar escala y omisión. Descartadas de plano: NVIDIA Blueprints (orquestación que
+mata la portabilidad swappable).
 
 ### Upgrade de navegabilidad y estética (propuesta 2026-07-02, POST estructura principal)
 
