@@ -47,7 +47,7 @@ hecho lado a lado, qué omitió cada medio y qué técnica usó. Decido con evid
 | Crawler | Python + httpx + trafilatura | corre en GitHub Actions cada 6h |
 | Base de datos | Supabase (Postgres + pgvector) | región São Paulo |
 | Embeddings | sentence-transformers multilingüe | Fase 2, local, gratis |
-| Análisis IA | NVIDIA NIM (API hosted) — Llama 3.3 70B | Fase 3, gratis; OpenAI-compat; Groq fallback |
+| Análisis IA | Fase 3 — Llama 3.3 70B | DeepInfra primario / NIM fallback / Groq deprecado. Es una línea. |
 | Frontend | Next.js 14 (App Router) en Vercel | Server Components, solo lectura |
 | Inmutabilidad | hashes SHA-256 + log append-only | Polygon opcional Fase 4 |
 | Jobs | GitHub Actions cron | gratis |
@@ -130,25 +130,62 @@ relaciones, no la noticia de último minuto. Aporta profundidad analítica al cl
 
 ---
 
-## 5. Taxonomía de técnicas de persuasión (Fase 3, en español)
+## 5. Taxonomía de técnicas de persuasión (Fase 3)
 
 El producto dice "técnicas de persuasión detectadas", NO "sesgo cognitivo"
 (el sesgo vive en el lector; la técnica vive en el texto).
 
-Códigos: `encuadre` (palabras cargadas), `omision` (falta un hecho que el clúster
-sí tiene), `miedo` (amenaza desproporcionada), `falsa_dicotomia`,
-`atribucion_difusa` ("expertos dicen" sin fuente), `titular_enganoso`,
-`arrastre` ("todos coinciden").
+> **ESTADO (medido 2026-07-17): el carril de detección PER-ARTÍCULO está CERRADO.**
+> De 7 códigos, 1 pasó su banco (`arrastre`) y resultó irrelevante en el archivo real
+> (0.15% de cobertura ≈ 10 artículos de 6562). Ver BITACORA 2026-07-17.
 
-Salida JSON estricta por artículo: tecnicas[], omisiones[], resumen_neutral.
-Prompt en español, temperatura baja, escéptico, cita evidencia textual o no
-reporta. Calibrar conservador: un falso positivo de "manipulación" cuesta más
-credibilidad que diez falsos negativos.
+### Veredicto por código
+| Código | Estado | Base |
+|---|---|---|
+| `arrastre` | validado en banco, IRRELEVANTE en producción | cobertura 0.15% (medida) |
+| `atribucion_difusa` | RECHAZADO — baja confianza | FP=4/4 (medido) |
+| `encuadre` | baja confianza, v4 congelado | error se desplaza, no se reduce (medido) |
+| `falsa_dicotomia`, `miedo` | NO MEDIDOS — carril cerrado | predichos baja confianza |
+| `titular_enganoso` | fuera por estructura | es relación titular↔cuerpo, otra clase de claim |
+| `omision` | sin validar — ÚNICO superviviente estructural | es inter-artículo, el carril vivo |
 
-Implementación (decidido 2026-06-19): proveedor NVIDIA NIM, modelo
-meta/llama-3.3-70b-instruct, detrás de cliente swappable (base_url+api_key+model_id
-en config). JSON estricto se fuerza por prompt + validación/retry, NO por extensión
-propietaria (preserva portabilidad a Groq, el fallback). Detalle y porqué en BITACORA.
+### Por qué falló (no fue el modelo ni el prompt)
+1. **Aritmética del falso positivo.** Con prevalencia 0.15% y umbral de precisión 0.90 se
+   exige especificidad 99.983%. Ningún clasificador lo hace. La regla "un FP cuesta más que
+   diez FN" (correcta) y una clase al 0.15% (medida) son **contradictorias juntas**.
+2. **Taxonomía deductiva.** Esta §5 se escribió antes de que existiera el corpus: categorías
+   de manual de retórica, no inducidas del archivo. El archivo dice que casi no ocurren.
+3. **Tarea en la columna débil del modelo.** El 70B es fuerte comparando textos y
+   distinguiendo voz de cita; es débil en juicios normativos abiertos y en hallar clases
+   raras. Toda esta §5 pedía lo segundo.
+
+### Reglas que gobiernan cualquier código futuro (no negociables)
+- **BASE RATE PRIMERO.** Ningún código entra a probe sin medir su prevalencia. Si es <1%, se
+  cambia la TAREA, no el prompt.
+- **Un banco balanceado mide separabilidad, NO precisión operativa.** Todo banco declara su
+  prevalencia.
+- **La verificación debe ser CÓDIGO, no juicio.** No existe oráculo humano disponible en este
+  proyecto (ver BITACORA).
+- **Grounding verbatim = filtro de publicación.** Si la cita no está literal en el artículo,
+  no se publica.
+- **Los prompts validados son especificación de producto**, viven versionados en
+  `/crawler/prompts/`, no en diag desechables.
+- Calibrar conservador sigue vigente: un falso positivo de "manipulación" cuesta más
+  credibilidad que diez falsos negativos.
+
+### Implementación
+Proveedor **DeepInfra**, modelo `meta-llama/Llama-3.3-70B-Instruct`, temp 0.15, detrás de
+cliente swappable (base_url + api_key + model_id en config). NVIDIA NIM fallback; Groq
+deprecado (decomisión 2026-08-16). JSON estricto por prompt + validación/retry, no por
+extensión propietaria. **Corrige la decisión previa de 2026-06-19 (NIM primario) y §2.**
+**El modelo no es el cuello de botella: no cambiar de modelo buscando arreglar esto.**
+
+### Dirección (acordada 2026-07-17, pendiente de ratificación)
+La salida no es un mejor clasificador: es **cambiar de tarea a COMPARACIÓN inter-medio**.
+La divergencia entre medios sobre el mismo hecho tiene base rate ~100% por construcción, no
+acusa (presenta hechos citables lado a lado y el lector juzga), y es literalmente el momento
+de valor declarado en §1. Unidad = el PAR de artículos, nunca el clúster completo (medido:
+19 artículos colapsan a 4 entradas en 504s).
 
 ---
 

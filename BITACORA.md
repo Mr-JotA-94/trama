@@ -176,6 +176,156 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 
 ## Deuda técnica conocida
 
+### [2026-07-17] CRÍTICA — No existe oráculo de ground truth para Fase 3
+**Síntoma:** puesto frente a los 57 casos reales del censo, Jota —**autor de la definición de
+`arrastre`, autoridad de taxonomía del proyecto**— declaró no poder aplicarla con confianza.
+**Causa:** no es falta de estudios. Si el autor no puede ejecutar su propia definición sobre
+el archivo real, **la definición no es operacionalizable**, y la pregunta "¿el 70B la aplica
+bien?" nunca tuvo referencia contra la cual medirse. El banco de 5 casos no es una muestra
+del corpus: es una colección de **casos elegidos por ser claros**. FN=0/FP=0 se midió sobre
+el subconjunto fácil. Poder juzgar "todos sabemos que detrás de Abelardo…" y no poder juzgar
+el caso #34 no es inconsistencia: el primero fue seleccionado por nítido, el segundo es lo
+que hay en la vida real.
+**Antecedente:** la BITACORA ya rozó esto ("no ground-truth oracle exists for automated
+evaluation") y lo parchó con "Jota juzga". El parche se rompió hoy.
+**Decisión:** NO se arregla contratando anotadores ni entrenando el criterio. Se EVITA:
+se elige un carril donde la verificación sea **código, no juicio** (grounding verbatim:
+`in`, determinista, sin humano).
+**Reactivación:** si alguna vez se necesita precisión sobre juicio humano, exige >=2
+anotadores independientes y acuerdo inter-anotador reportado. Un solo anotador —y menos el
+autor de la definición— no es medición.
+
+### [2026-07-17] CRÍTICA — Banco balanceado ≠ prevalencia real (400×)
+**Síntoma:** `arrastre` pasó su banco con FN=0/FP=0 y da 17.5% de precisión en el archivo.
+**Causa:** banco 3 pos + 2 neg = prevalencia 60%. Archivo = 0.15%.
+**Decisión:** los bancos NO se rehacen (sirven para lo que sirven: medir separabilidad). Se
+RE-ETIQUETA lo que significan. Todo banco declara su prevalencia y dice explícitamente que
+NO mide precisión operativa.
+**Reactivación:** cualquier lectura futura de "FN=0/FP=0 -> listo para producción" es un
+error; exige base rate medida primero.
+
+### [2026-07-17] Los prompts VALIDADOS no viven en ningún artefacto versionado
+**Síntoma:** al abrir la sesión, el bloque de `arrastre` (único código validado de v1) NO
+estaba en `diag_fase3_articulo.py` — lo sobrescribió el de `atribucion_difusa`. Se recuperó
+verbatim del historial de chat del 2026-07-12, por suerte.
+**Causa:** regla del proyecto "los diag son desechables y no se commitean" aplicada a un
+archivo que contenía especificación de producto.
+**Decisión:** un prompt validado NO es instrumentación desechable. Debe vivir en
+`/crawler/prompts/{codigo}_v{n}.txt`, versionado y commiteado. NO se hizo esta sesión (es
+otra unidad). El paso "el batch reusa prompt(s) sobrevivientes" era un supuesto falso.
+**Reactivación:** antes de escribir cualquier prompt nuevo de Fase 3.
+
+### [2026-07-17] `arrastre` — el positivo #3 del banco es DUDOSO (y está DENTRO del prompt)
+**Síntoma:** el ejemplo SÍ canónico ("todos sabemos que detrás de Abelardo de la Espriella
+hay partes del establecimiento") aparece, con contexto completo, dentro de habla transcrita:
+"…es también una puesta en escena, porque todos sabemos que […] y el muy hábilmente,
+**digamos**, ha dicho bueno no se me suban a la tarima…". Es una entrevista/video, no prosa
+editorial. **Por la regla de voz del propio prompt sería VOZ DE ACTOR -> N.**
+**Causa:** la regla de voz define cita como "entre comillas «», o tras dijo/afirmó/sostuvo X".
+Una transcripción sin comillas y sin verbo declarativo se cuela por el hueco. El banco de 5
+casos nunca lo mostró porque no traía contexto suficiente.
+**Gravedad:** está en el SYSTEM como EJEMPLO SÍ -> le enseña al modelo a marcar voz de actor
+cuando no hay comillas. **Conecta con la vigilancia de d209382f** ("nadie en Washington quiere
+responder en voz alta"): puede ser el MISMO agujero, no dos casos sueltos.
+**Decisión:** NO se arregla — el carril per-artículo está cerrado. Se registra.
+**Reactivación:** si se retoma `arrastre` (opción b), esto se resuelve ANTES de correr nada.
+
+### [2026-07-17] Bugs del lexicón de `arrastre` (medidos, no arreglados)
+**Síntoma:** (1) NEGACIÓN — `est[aá] claro que` captura "**no** está claro que volver a un
+modelo militar vaya a ser eficaz" (n=45, n=63): el texto expresa incertidumbre y el detector
+lo lee como consenso forzado. Es el opuesto exacto de arrastre. (2) PERSONALIZACIÓN — "**para
+mí** está claro que…" (n=33): el autor se hace cargo en primera persona, lo contrario de
+apelar al consenso.
+**Causa:** el regex mira el marcador, no lo que lo rodea. Ambos son triviales de arreglar
+(lookbehind).
+**Decisión:** NO se arreglan. El carril está cerrado; arreglarlos sube P_lex de 0.175 a ~0.21
+y no mueve ninguna decisión.
+**Reactivación:** solo si se retoma la opción (b).
+
+### [2026-07-17] Participación de medios en historias — NO MEDIDA (denominador corregido)
+**Dato duro (medido):** sobre 6562 artículos únicos — el-espectador 2622 (40%), el-tiempo
+2044 (31%), el-colombiano 879, las2orillas 545, la-silla-vacia 370, rtvc 81, voragine 21.
+**CAVEAT que invalida la lectura directa (corrección de Jota, 2026-07-17):** ese denominador
+es el corpus COMPLETO, y El Tiempo/El Espectador publican mucho contenido que nunca forma
+historia (deportes, farándula, minuto a minuto — visible en el censo de arrastre: Shakira,
+Dolly Parton, Mundial 2026). Los artículos de interés nacional son los que naturalmente se
+agrupan. El denominador correcto para el carril de divergencia es `story_articles`, no
+`articles`. **La cifra de volumen NO responde la pregunta.**
+**La pregunta real, NO MEDIDA:** ¿en qué % de las historias participa cada medio?
+`historias con el medio / total de historias`. Vorágine con 21 artículos puede estar en 8
+historias (voz presente, volumen bajo) o en 0 (dos diagnósticos opuestos, misma cifra):
+(a) publica poco de temas que otros cubren -> es su línea editorial, no un bug;
+(b) publica de lo mismo pero las dos compuertas (IDF>=20 AND coseno>=0.70) no lo enganchan
+    -> es un bug de clustering, y grave.
+**Antecedente:** "Vorágine ausente del cross-coverage" YA estaba registrado en Ideas del
+TRASPASO. Esto no es hallazgo nuevo; es la misma observación pidiendo por fin un número.
+**Por qué importa (y qué NO importa):** la MECÁNICA del carril de comparación no sufre —
+El Tiempo vs El Espectador sobre el mismo hecho es divergencia válida y publicable. Lo que
+sufre es (1) la PROMESA de Arquitectura §4 ("cada medio aporta un ángulo que ningún otro
+cubre"): si RTVC —voz institucional del Estado— aparece en el 2% de las historias, ese
+ángulo vive en la tabla `outlets`, no en el producto; y (2) el CENTROIDE: si dos medios
+dominan la participación, `score_neutralidad` mide de facto "parecerse a El Tiempo y El
+Espectador". Conecta con las deudas ya abiertas "centroide-por-medio: sesgo direccional" y
+"un voto por medio para centroides".
+**Decisión:** no se ataca hoy. Se mide (Tier 0 sobre story_articles, sin LLM ni corpus)
+ANTES de construir sobre divergencia.
+**Reactivación:** primera unidad del carril de comparación, junto con la base rate de
+divergencia. Ambas salen de la misma consulta.
+
+### [2026-07-17] La receta "coarse ilike server-side" NO escala más allá de ~3 términos
+**Síntoma:** 13 `ilike '%…%'` seguidos -> Cloudflare 1101 "Worker threw exception",
+**determinista en el término #12**. El backoff (4 intentos, 2/4/8s) no ayudó: no es
+transitorio.
+**Causa:** cada ilike es un seq scan sobre 7k filas de texto completo, sin índice posible; el
+worker de Supabase (plan gratis) acumula presión y revienta. La receta está en la BITACORA
+(diag_positivos_superficie.py) validada con ~3 términos; se aplicó a 13 **sin preguntar si
+escalaba**.
+**Decisión:** patrón correcto para scans amplios: bajar el corpus una vez (paginado + ordenado
+por id, página adaptativa), cachear a disco, filtrar en Python. Cero filtros server-side.
+**Lección de método, más importante que el bug:** una receta de la BITACORA lleva implícito el
+régimen en que se midió. Aplicarla fuera de ese régimen es el mismo error que leer FN=0/FP=0
+de un banco balanceado como precisión operativa: usar un número fuera de sus condiciones de
+validez.
+
+### 2026-07-17 — Banco etiquetado por ARTÍCULO para un código que dispara por SPAN
+**Síntoma:** el negativo a38be86f (sismo) se etiquetó `_neg` porque su span saliente es factual
+("los expertos señalan que el sismo ocurrió cerca de la superficie" = hecho geológico). Pero el
+mismo artículo contiene *"para muchos expertos, este doble sismo ya puede considerarse el desastre
+natural más grande"* — evaluativo, positivo GENUINO. El artículo no era un negativo limpio.
+**Causa:** error de diseño de Claudio al construir el banco: se etiquetó a nivel artículo un código
+que dispara a nivel span.
+**Decisión:** NO invalida el veredicto de atribucion_difusa — descontando a38be86f, quedan 940dcc4c,
+d209382f y 80d6f651 como FP inequívocos (sourcing legítimo de hechos, y uno con fuente identificada).
+El rechazo se sostiene sobre 3/3.
+**Regla que se incorpora al mecanismo de probing:** el NEGATIVO debe ser un artículo donde NINGÚN
+span califique — no basta con que el span saliente sea factual. Verificar leyendo el cuerpo completo,
+no el snippet de 80 chars del scan de superficie.
+**Reactivación:** aplica a todo banco futuro. Ya integrado al paso 1 del mecanismo en TRASPASO.
+
+### 2026-07-17 — Desync bloque-SYSTEM ↔ banco produce corridas VOID silenciosas
+**Síntoma:** se corrió el banco de atribucion_difusa con el bloque de taxonomía de `arrastre`
+todavía en el SYSTEM. Los 3 positivos dieron vacío. Leído sin cuidado, eso es FN=3 y mata un
+código bueno; en realidad el código ni siquiera estaba en el prompt. Se detectó porque el único
+código emitido en las 7 corridas fue `arrastre` (span "nadie en Washington…" en d209382f).
+**Causa:** el bloque del SYSTEM y el banco son dos artefactos que se cambian a mano, por separado,
+sin nada que verifique que hablan del mismo código.
+**Decisión:** NO arreglado esta sesión. Mitigación diseñada y NO implementada (~5 líneas):
+constante `CODIGO_ACTIVO = "x"` junto a TECNICAS_VALIDAS + abort en `cargar_banco()` si
+`{codigos derivados del banco} != {CODIGO_ACTIVO}`. Se rechazó un registro completo de códigos
+(`--codigo X` que swapee bloque+banco) por scope creep: quedan ≤1 códigos por medir.
+**Criterio de reactivación:** implementar el tripwire ANTES del próximo probe, si lo hay. Si el
+carril per-artículo se cierra (ver decisión de alcance), la deuda muere con él.
+
+### 2026-07-17 — VIGILANCIA: posible FP de `arrastre` en d209382f
+**Síntoma:** durante la corrida VOID, `arrastre` marcó 3/3, estable y groundeado, el span
+"nadie en Washington quiere responder en voz alta". Tapado el "nadie", queda RETICENCIA de
+funcionarios — narrativa —, no una tesis en disputa presionada como consenso.
+**Decisión:** `arrastre` sigue VALIDADO y CONGELADO. Un caso no reabre un código que pasó su banco
+con FN=0/FP=0. Esto es VIGILANCIA, no reapertura, y no se re-versiona el prompt por esto.
+**Criterio de reactivación:** si aparecen ≥2 casos más del mismo patrón ("nadie/todos" +
+reticencia/narrativa en vez de consenso forzado), agregar d209382f al banco de arrastre como
+negativo y re-medir. Antes no.
+
 ### [2026-07-12] `arrastre` VALIDADO — primer código de alta confianza de v1 (MEDIDO)
 Método: banco fijo extendido (3 arrastre_pos + 2 arrastre_neg, texto real, dedup), DeepInfra
 Llama-3.3-70B, temp 0.15, --repetir 3 por artículo. Umbral fijado ANTES de correr: pasa si
@@ -1031,6 +1181,73 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
+### [2026-07-17] Taxonomía INDUCTIVA en vez de deductiva (si se reabre taxonomía)
+La §5 se escribió ANTES de que existiera el corpus: son categorías de manual de retórica,
+importadas de la literatura de propaganda, no inducidas de lo que los medios colombianos
+realmente hacen. El archivo dice que 6 de esos 7 fenómenos, tal como se definieron, casi no
+existen en él — y caen justo en los dos extremos donde nada funciona: `arrastre` demasiado
+raro (0.15%), `encuadre` demasiado difuso (todo texto tiene palabras cargadas, el límite es
+arbitrario). Ninguno cae en la zona donde un clasificador es posible.
+**Cómo se haría bien:** muestrear 50 artículos al azar, LEERLOS, y preguntar "¿qué hacen ESTOS
+medios que un lector debería ver?". La taxonomía sale del corpus, no del manual. Y la
+prevalencia se mide antes de escribir una línea de prompt.
+
+### [2026-07-17] Dónde es fuerte el 70B — guía de diseño para Fase 3+
+FUERTE: comparar dos textos · distinguir cita de voz del medio · extraer, alinear, reescribir ·
+detectar qué le falta a A que B sí tiene.
+DÉBIL: juicios normativos abiertos · proporcionalidad ("¿es desproporcionado?") · encontrar
+clases raras sin evidencia · emitir acusaciones categóricas.
+**Toda la Fase 3 diseñada hasta hoy vivía en la columna derecha. Toda.** Y no hay upgrade de
+modelo que lo arregle: un modelo mejor sube la especificidad de 99.28% a 99.7% y la precisión
+sigue en 30%. **Cambiar de modelo es la trampa más cara disponible: cuesta semanas y no mueve
+el número.**
+
+### [2026-07-17] `regex -> LLM filtra` como arquitectura general
+El regex da RECALL (barato, auditable, sin alucinación). El LLM da PRECISIÓN sobre un span ya
+acotado. Tres efectos: (1) sube la base rate en el punto de decisión ~100× (0.15% -> 17.5% en
+el caso de arrastre); (2) elimina la FABRICACIÓN por construcción — el span viene dado, no hay
+nada que inventar; (3) baja el costo de 6562 llamadas a 57. Aplicable a cualquier código con
+ancla léxica. **Es la única forma en que la opción (b) es viable** — y sigue bloqueada por la
+falta de oráculo.
+
+### [2026-07-17] Gate de grounding verbatim = FILTRO DE PUBLICACIÓN, no control de calidad
+Si el output es "El Tiempo dice «X literal», El Espectador dice «Y literal»", el código
+verifica que ambas citas existan verbatim en sus artículos. Si no están, **no se publica**.
+Es `in`: determinista, sin humano, sin oráculo. Convierte la alucinación en estructuralmente
+IMPUBLICABLE — exactamente lo que la clasificación nunca pudo tener (no hay forma mecánica de
+verificar "esto es manipulación"; sí la hay para "esta frase está en este artículo").
+**Es lo que permite ir rápido en el carril de comparación sin bajar el estándar.** Consecuencia:
+la deuda "DeepInfra recorta cita -> alucinada fantasma" sube de detalle a load-bearing.
+
+### [2026-07-17] El riesgo del carril de comparación: no acusa, pero puede MENTIR
+"El Espectador omitió que el juez ordenó la captura" — si El Espectador SÍ lo dice, es un error
+factual, publicado, **refutable por cualquiera en diez segundos**. Ante FLIP es peor que la
+acusación, porque se cae solo. El gate de grounding es la mitigación, pero la asimetría cambia
+de forma, no desaparece. No olvidar al diseñar.
+
+### [2026-07-17] Matar Fase 3 entera es una opción real y defendible
+Archivo inmutable + versiones lado a lado YA es un producto, YA está en producción, y no
+promete nada que una IA no pueda cumplir. Si el carril de comparación tampoco mide bien, no
+forzarlo. Registrado explícitamente para que el yo-del-futuro no lo lea como derrota sino como
+salida legítima.
+
+### 2026-07-17 — Carril de divergencia inter-artículo como señal (idea de Jota)
+Usar el desacuerdo ENTRE medios sobre el mismo hecho para separar HECHO de TESIS sin pedirle al
+LLM ese juicio: si los 7 medios dicen que el sismo fue superficial, es hecho; si uno solo dice que
+"corre el riesgo de perder su carácter técnico", es tesis. Darle a la corrida per-artículo el
+contexto de los ángulos de los demás artículos de la historia, sin que el modelo lea todo (ahorro
+de créditos).
+**Por qué se registra y no se construye hoy:** (a) es, en el fondo, el diseño original de
+`omision`/`resumen_neutral`, ya diferido a v3.1 — no es idea nueva, es el plan original, y eso
+sugiere que el carril inter-artículo quizá era el de valor y el per-artículo el desvío;
+(b) CAVEAT MEDIDO: el fallo de hoy NO fue por falta de información — el ejemplo negativo estaba
+VERBATIM en el prompt y el modelo lo marcó igual. Más contexto no arregla un problema de atención;
+(c) CAVEAT MEDIDO: el modo clúster ya se degrada con contexto largo (19 art → colapsa a 4 entradas,
+504s). Construir sobre ese cimiento cuesta más y ya sabemos que está rajado.
+**Condición para promoverlo a scope:** unidad propia, con un diseño que NO sea "meter el clúster
+entero al prompt" (p. ej. señal calculada por código —divergencia de embeddings/entidades— que se
+INYECTA como dato, no como texto a leer). Decisión de alcance pendiente (TRASPASO, Próximo paso #1).
+
 ### [2026-07-12] `encuadre` por enfoque distinto — post prompt-engineering
 El prompt único falló porque mezcla dos tareas que el 70B no hace juntas: EXTRAER el candidato
 valorativo (lo hace bien) y JUZGAR el contexto (¿hecho público en disputa atribuible a un actor?
@@ -1494,6 +1711,151 @@ clúster necesita destilado, no un botón más.
 
 ## Notas de operación
 
+### 2026-07-17 (2ª sesión) — CARRIL PER-ARTÍCULO CERRADO. La aritmética del falso positivo.
+
+**Qué se midió.** Unidad Tier 0 (opción "d"): ¿el LLM se gana el puesto en el carril
+per-artículo? Método: lexicón determinista de `arrastre` (12 patrones núcleo, fieles
+LITERALES a la prueba operativa congelada, aprobados por Jota ANTES de correr) contra el
+corpus completo. Umbral fijado ANTES: P_lex >= 0.90 -> detector determinista, batch
+cancelado; P_lex < 0.90 -> el LLM es el filtro de precisión.
+
+**Resultado.** Corpus 7046 filas / 6562 URLs únicas (recapturas 484 = 6.9%, MUY por debajo
+de lo que se creía). N_hits = 57 spans en 55 artículos = **cobertura 0.84%**.
+**P_lex = 10/57 = 0.175.** Control `unánime` (exclusión dura): 10/10 correctos — la
+exclusión funciona. **Positivos reales estimados: ~10 artículos en TODO el archivo = 0.15%.**
+Causa de los 47 FP: ~23 cita de actor, ~10 queda un hecho, ~11 trivial sin tesis en disputa,
+2 bugs de regex.
+
+**El umbral se cumplió y aun así la conclusión es la contraria a la esperada.** Formalmente:
+P_lex < 0.90 -> "el LLM ES el filtro, batch justificado". Y es cierto: el lexicón solo es 82%
+basura y filtrar es justo lo que un 70B hace bien. Pero se gana el puesto **para producir DIEZ
+etiquetas en toda la hemeroteca**. La opción (a) del TRASPASO ("v1 = arrastre solo a
+presentación + batch") muere aquí, con datos, no con opinión. El BATCH Tier 3 se CANCELA: 55
+artículos son un `for` loop de 2 minutos, no un pipeline con failover y retry-backoff.
+
+**EL HALLAZGO CENTRAL — la aritmética del falso positivo.** No es el modelo. No es el prompt.
+Es que la clase es demasiado rara para que la precisión exigida sea alcanzable por NADA:
+> Con prevalencia 0.15% y umbral 0.90, se exige especificidad 99.983% — un error cada 6.000
+> juicios. Ningún clasificador humano ni artificial hace eso.
+El lexicón logró especificidad **99.28%** (47 FP sobre 6552 negativos) y dio 17.5% de
+precisión. El denominador manda, no la calidad del detector.
+**Las dos premisas del proyecto eran sensatas por separado y contradictorias juntas:** "un FP
+cuesta más que diez FN" (correcta, y es lo que ha protegido al proyecto) + clase al 0.15%
+(medida) = imposible. Se ejecutó esa contradicción durante semanas, correctamente. Por eso
+ningún código pasaba: no era mala suerte ni mala mano con los prompts.
+
+**MATIZ que no se puede perder:** la aritmética mata la CLASIFICACIÓN A CIEGAS sobre 6562
+artículos. NO mata `regex propone span -> LLM juzga sí/no`. Ahí la base rate en el punto de
+decisión es **17.5%, no 0.15%** — dos órdenes de magnitud. Y la fabricación se vuelve
+imposible: el span viene dado.
+
+**ESTO EXPLICA RETROACTIVAMENTE LA FABRICACIÓN.** La entrada de esta mañana registró como
+misterio que `atribucion_difusa` inventara spans y `arrastre` no. Ya no es misterio: se le
+pidió cazar a ciegas una clase casi ausente con un prompt que le enseña a buscar. Un modelo
+obediente mandado a buscar agujas en pajares SIN agujas **fabrica agujas**. La alucinación no
+fue defecto del código: fue la respuesta correcta a una tarea mal planteada. Deja de ser
+anomalía y pasa a ser **predicción**: cualquier código de baja prevalencia buscado a ciegas
+fabricará.
+
+**Por qué el banco mintió (aplica a TODA la validación de Fase 3).** Banco de arrastre: 3
+positivos + 2 negativos = prevalencia 60%. Archivo real: 0.15%. **400× de diferencia.**
+FN=0/FP=0 sobre banco balanceado no predice NADA sobre precisión en archivo desbalanceado. No
+se midió mal — se midió otra cosa (separabilidad), con rigor. Todo banco futuro debe declarar
+su prevalencia y qué mide.
+
+**REGLA NUEVA, no negociable:** *ningún código entra a probe sin medir su BASE RATE primero.
+Si es <1%, la precisión alta es inalcanzable: se cambia la TAREA, no el prompt.* Esto habría
+matado `arrastre` el mismo día que se coronó como único código de v1.
+
+**El predictor v3 sobrevive pero baja a secundario.** Sigue siendo cierto (disparador de
+superficie compartido + estatus epistémico distinto = no separable), pero responde
+"¿es domesticable?" — y la prevalencia responde "¿es rentable?". `arrastre` pasó v3 y es
+inútil igual. Base rate PRIMERO, v3 después.
+
+**Prueba de que el prompt no era el problema.** Ya estaba en la evidencia y no se había leído
+así: en el probe de `atribucion_difusa` se puso un contraejemplo VERBATIM, carácter por
+carácter, en el SYSTEM, y el modelo marcó la frase igual. Cuando el prompt perfecto no
+funciona, el problema no es el prompt. El tamaño de estos prompts es la CICATRIZ de intentar
+arreglar por instrucción algo que no era problema de instrucción.
+
+**Herramienta.** `diag_arrastre_lexico.py` (Tier 0, read-only, DESECHABLE, no se commitea).
+Tres versiones: v1 murió por payload (coarse ilike
+
+### 2026-07-17 — PROBE de `atribucion_difusa`: RECHAZADO (FP=4/4). Predictor v3.
+
+**Setup.** Banco propio: 3 positivos (57126171 "fuentes consultadas creen que… debería";
+31992e94 "algunos analistas señalan… corre el riesgo"; 0c574952 "para algunos sectores no deja
+de ser llamativo") + 4 negativos duros (940dcc4c fuente reservada→identidad; a38be86f expertos→
+hecho geológico; d209382f fuentes familiarizadas→evento CIA; 80d6f651 ruido léxico puro).
+DeepInfra, Llama-3.3-70B, temp 0.15, --repetir 3. Umbral fijado ANTES: todos los pos marcan 3/3
+con grounding OK, todos los neg vacíos 3/3.
+
+**Resultado: NO PASA.** 4/4 negativos dieron FP, estables en 3/3. 2/3 positivos pasaron;
+57126171 falló por grounding (2 de 4 spans ALUCINADOS, estables).
+
+**Por qué importa el CÓMO falló (esto cierra la puerta a iterar el prompt):**
+El SYSTEM contenía, en EJEMPLOS NO, la frase *"los expertos señalan que el sismo ocurrió muy
+cerca de la superficie → VACÍO"*. El modelo marcó *"los expertos señalan que el segundo sismo
+ocurrió muy cerca de la superficie"* igual, con el contraejemplo casi carácter por carácter
+delante. Tres de los cuatro negativos eran ejemplos NO literales del prompt. **Si un ejemplo
+negativo verbatim no detiene al modelo, ningún ejemplo adicional lo va a detener.** El prior
+léxico ("expertos/fuentes" + verbo declarativo) aplasta la prueba operativa de dos pasos.
+Peor: en d209382f marcó *"Un analista venezolano experto en seguridad y defensa, consultado por
+el diario"* — fuente IDENTIFICADA. Ni siquiera llegó al paso 2; falló el paso 1.
+
+**Hallazgo independiente: el código induce FABRICACIÓN.** 57126171 dio 2/4 alucinadas estables
+en las 3 corridas. `arrastre` nunca alucinó. Hipótesis: cuando el modelo caza un código con prior
+léxico fuerte y no encuentra suficientes instancias reales, inventa spans plausibles. Es un strike
+independiente del FP y aplica a cualquier código futuro con esa forma. NO confundir con la deuda
+"DeepInfra recorta cita → alucinada fantasma" (2026-07-11): eso es borde recortado; esto es
+invención.
+
+**PREDICTOR v3 (v2 FALSADO por esta corrida).** Yo (Claudio) elevé atribucion_difusa apostando a
+que tenía "exclusión pequeña y convergente" (v2). Los datos me refutaron: su exclusión es *todo
+sourcing anónimo de cualquier hecho* — abierta e infinita en contenido. La regla nueva:
+> Si el POSITIVO y el NEGATIVO comparten el mismo DISPARADOR DE SUPERFICIE y solo difieren en el
+> ESTATUS EPISTÉMICO de la afirmación que sigue, ningún prompt los separa en un 70B.
+`arrastre` sobrevivió porque su exclusión tiene ANCLA LÉXICA (`unánime` + cifra = hecho).
+`atribucion_difusa` no tiene ninguna. **Corolario operativo:** antes de gastar un probe,
+preguntar "¿hay una PALABRA que separe el positivo del negativo?". Si no, no lo corras.
+
+**Esto valida la regla de no desplegar sin validar.** En producción, este código habría etiquetado
+como "manipulación" a la Unidad Investigativa de El Tiempo por usar "fuentes cercanas al proceso"
+— reportería anónima de manual — frente a la audiencia profesional que puede hundir el proyecto.
+El probe hizo exactamente su trabajo. Costo: una sesión. Beneficio: no publicar esa acusación.
+
+**Herramienta:** `resolver_ids.py` ahora ESCRIBE `banco_fase3_activo.txt` (no toca el banco de
+regresión congelado). `diag_fase3_articulo.py` ganó modo `--banco [archivo] --repetir N`: corre
+el banco entero, deriva el código objetivo de la etiqueta (`X_pos` → `X`) y da veredicto FN/FP
+MECÁNICO contra el umbral. Modo single intacto. El runner mide si el modelo marca; NO valida que
+la etiqueta esté bien puesta — ese juicio sigue siendo de Jota. Ambos siguen siendo diag
+desechables: NO se commitean.
+
+- **Mecanismo de probing de códigos Fase 3 (protocolo, 2026-07-12; referencia: arrastre):**
+  Calibrar cada código de técnicas es una unidad medida, no prompt-engineering a ojo. Pasos:
+  (1) BANCO por código: ≥3 positivos reales del corpus + ≥2 negativos DUROS (el caso que el léxico
+  confunde y DEBE quedar vacío), sacados con diag_positivos_superficie.py (coarse ilike → fino regex
+  → flags fuente?/en-cita?), dedup por texto, etiquetados {codigo}_pos/_neg en banco_fase3.txt.
+  (2) PROMPT, una variable a la vez: en el SYSTEM del diag de artículo se reemplaza SOLO el bloque de
+  taxonomía por QUÉ ES + PRUEBA OPERATIVA (tapá el marcador → ¿hecho o tesis?) + EXCLUSIÓN DURA +
+  REGLA DE VOZ (medio≠cita) + PROCEDIMIENTO (copiá verbatim ANTES de clasificar; vacío permitido;
+  prohibido inventar/parafrasear) + EJEMPLOS SÍ/NO de texto real; y se cambia `"codigo"` en el
+  ejemplo del JSON. No se tocan los otros códigos.
+  (3) UMBRAL fijado ANTES de correr: todos los positivos marcan, todos los negativos vacíos, estable
+  en 3 corridas, grounding verbatim OK. (4) CORRER: `python diag_fase3_articulo.py <uuid> --repetir 3`
+  por id; confirmar `Provider: deepinfra`. (5) LEER FN/FP/grounding; alucinada por borde recortado =
+  fantasma (no cuenta como FP). (6) VEREDICTO sin punto medio: pasa → v1; falla FN → definición
+  estrecha; falla FP → exclusión no convergente → baja-confianza o enfoque distinto.
+  Por qué importa: garantiza resultados de alta calidad y confiables ANTES de exponerlos. Un FP no
+  medido en producción es un cartel público que dice "manipulación" a periodismo legítimo frente a
+  FLIP/Colombiacheck — el peor lugar para diagnosticar. El diagnóstico vive en el banco, no en prod.
+
+- **Corpus MEDIDO 2026-07-12: 5922 filas** (no ~2700). Incluye recapturas por inmutabilidad
+  (mismo texto, hash distinto → filas duplicadas por contenido). Consecuencias: (a) muestrear banco
+  siempre dedup por texto; (b) el batch debe decidir su unidad (por fila vs por url/último-hash) —
+  queda para la unidad de escala. `tipo` sigue poco fiable: columnas de opinión salen como 'noticia'
+  (ej. las2orillas 9a86e897, el-espectador d42a8e25), lo que ensucia el muestreo de opinión del banco.
+  
 - **Pipeline CI encadenado (2026-06-23):** crawler.yml tiene dos jobs: crawl (cron 6h
   + dispatch) y backfill (needs:crawl). Entornos separados a propósito: crawl liviano
   (httpx+trafilatura), backfill pesado (torch CPU-only + spaCy + sentence-transformers,
