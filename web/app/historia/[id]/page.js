@@ -1,5 +1,6 @@
 // TRAMA — Expediente de historia (clúster de Fase 2).
 // Server Component: solo lectura, revalidación c/5 min.
+import { Fragment } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -29,6 +30,72 @@ function fechaRango(inicio, fin) {
   const dI = fmt(inicio);
   const dF = fin ? fmt(fin) : null;
   return dF && dF !== dI ? `${dI} – ${dF}` : dI;
+}
+
+// Clave de fecha-calendario (yyyy-mm-dd) en America/Bogota. Es la base de toda
+// comparación "¿cambió el día?": nunca comparar los timestamp crudos (UTC),
+// porque el corte de medianoche no coincide con el de Bogotá.
+function claveDiaCO(ts) {
+  return new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+}
+
+// Diferencia en días de calendario (Bogotá) entre dos timestamps.
+function diffDiasCO(desde, hasta) {
+  const d1 = new Date(claveDiaCO(desde) + "T00:00:00Z");
+  const d2 = new Date(claveDiaCO(hasta) + "T00:00:00Z");
+  return Math.round((d2 - d1) / 86400000);
+}
+
+// Etiqueta del separador de día del hilo, ej. "Jueves 18 de julio".
+function separadorDiaCO(ts) {
+  const texto = new Date(ts)
+    .toLocaleDateString("es-CO", {
+      timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long",
+    })
+    .replace(",", "");
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
+}
+
+// Empareja cada artículo del hilo con su separador de día (null si cae el
+// mismo día-calendario Bogotá que el artículo anterior). El primero siempre
+// lleva separador. Se calcula UNA vez sobre la lista completa y ordenada para
+// que el corte de día no se pierda entre la vista previa y "ver más".
+function construirHilo(articulos) {
+  let diaAnterior = null;
+  return articulos.map((a) => {
+    const dia = claveDiaCO(a.fecha_primera_captura);
+    const separador = dia !== diaAnterior ? separadorDiaCO(a.fecha_primera_captura) : null;
+    diaAnterior = dia;
+    return { articulo: a, separador };
+  });
+}
+
+// Rango + duración del clúster para el encabezado, ej. "Del 16 al 21 de julio
+// · 5 días". Si inicio y fin caen en el mismo día-calendario Bogotá, no hay
+// rango que mostrar: se cae a la fecha única.
+function rangoConDuracion(inicio, fin) {
+  if (!inicio) return "fecha desconocida";
+  const finEfectivo = fin || inicio;
+
+  if (claveDiaCO(inicio) === claveDiaCO(finEfectivo)) {
+    return new Date(inicio).toLocaleDateString("es-CO", {
+      timeZone: "America/Bogota", day: "numeric", month: "long", year: "numeric",
+    });
+  }
+
+  const soloDia = (ts) =>
+    new Date(ts).toLocaleDateString("es-CO", { timeZone: "America/Bogota", day: "numeric" });
+  const conMes = (ts) =>
+    new Date(ts).toLocaleDateString("es-CO", {
+      timeZone: "America/Bogota", day: "numeric", month: "long",
+    });
+  const mesDe = (ts) =>
+    new Date(ts).toLocaleDateString("es-CO", { timeZone: "America/Bogota", month: "long" });
+
+  const mismoMes = mesDe(inicio) === mesDe(finEfectivo);
+  const dias = diffDiasCO(inicio, finEfectivo);
+
+  return `Del ${mismoMes ? soloDia(inicio) : conMes(inicio)} al ${conMes(finEfectivo)} · ${dias} ${dias === 1 ? "día" : "días"}`;
 }
 
 // ── Sub-componentes (Server, misma página) ────────────────────────────────────
@@ -236,6 +303,9 @@ export default async function Historia({ params }) {
   const anclas      = articulos.filter((a) => a.es_ancla);
   const secundarias = articulos.filter((a) => !a.es_ancla);
   const labels      = etiquetarAnclas(articulos);
+  // colapsarCluster ya devuelve articulos ordenados por fecha_primera_captura
+  // asc (verificado arriba); el hilo se arma sobre ese mismo orden.
+  const hilo        = construirHilo(articulos);
 
   // ── Q3: historias conectadas (story_relations, espejo dirigido) ──
   // El grafo es espejo: reescribir_stories inserta ambas direcciones, así que
@@ -289,7 +359,7 @@ export default async function Historia({ params }) {
             {story.n_articulos} {story.n_articulos === 1 ? "captura" : "capturas"}
           </span>
           <span className="historia-fecha">
-            {fechaRango(story.fecha_inicio, story.fecha_fin)}
+            {rangoConDuracion(story.fecha_inicio, story.fecha_fin)}
           </span>
         </div>
       </div>
@@ -312,8 +382,12 @@ export default async function Historia({ params }) {
         {/* Editorial: las 3 visibles son las más antiguas (orden cronológico asc);
             cuándo destilar qué mostrar primero es decisión de producto futura. */}
         <ol className={`hilo-cronologico${articulos.length > 3 ? " hilo-preview-fade" : ""}`}>
-          {articulos.slice(0, 3).map((a) => (
-            <li key={a.url} className="hilo-nodo">
+          {hilo.slice(0, 3).map(({ articulo: a, separador }) => (
+            <Fragment key={a.url}>
+              {separador && (
+                <li className="hilo-separador-dia">{separador}</li>
+              )}
+              <li className="hilo-nodo">
               <div className="hilo-nodo-meta">
                 {a.editada ? (
                   <>
@@ -375,15 +449,20 @@ export default async function Historia({ params }) {
                   </ul>
                 </details>
               )}
-            </li>
+              </li>
+            </Fragment>
           ))}
         </ol>
         {articulos.length > 3 && (
           <details className="timeline-mas">
             <summary>Ver {articulos.length - 3} momentos más</summary>
             <ol className="hilo-cronologico">
-              {articulos.slice(3).map((a) => (
-                <li key={a.url} className="hilo-nodo">
+              {hilo.slice(3).map(({ articulo: a, separador }) => (
+                <Fragment key={a.url}>
+                  {separador && (
+                    <li className="hilo-separador-dia">{separador}</li>
+                  )}
+                  <li className="hilo-nodo">
                   <div className="hilo-nodo-meta">
                     {a.editada ? (
                       <>
@@ -445,7 +524,8 @@ export default async function Historia({ params }) {
                       </ul>
                     </details>
                   )}
-                </li>
+                  </li>
+                </Fragment>
               ))}
             </ol>
           </details>

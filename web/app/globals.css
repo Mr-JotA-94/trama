@@ -476,6 +476,33 @@ a { color: inherit; }
 .hilo-hash { color: var(--gris-archivo); opacity: 0.7; }
 .hilo-cambio-label { color: var(--hilo); }
 
+/* Separador de día: marca el corte de fecha-calendario (Bogotá) entre nodos
+   de días distintos. Vive dentro del mismo <ol> (border-left del hilo debe
+   seguir corrido). Tinta llena + negrilla (no gris-archivo, no mono) para que
+   se reconozca en un paneo rápido; la marca ::before es un trazo corto, no el
+   círculo de .hilo-nodo, para no confundirse con "editada" (que usa --hilo). */
+.hilo-separador-dia {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--tinta);
+  padding: 18px 0 6px 8px;
+  position: relative;
+}
+.hilo-separador-dia::before {
+  content: "";
+  position: absolute;
+  left: -35px;
+  top: 25px;
+  width: 9px;
+  height: 3px;
+  background: var(--tinta);
+}
+.hilo-separador-dia:first-child { padding-top: 0; }
+.hilo-separador-dia:first-child::before { top: 7px; }
+
 /* ---- Bento editorial ----------------------------------------------- */
 .bento-anclas {
   display: flex;
