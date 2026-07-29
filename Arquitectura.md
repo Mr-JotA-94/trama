@@ -180,13 +180,22 @@ deprecado (decomisión 2026-08-16). JSON estricto por prompt + validación/retry
 extensión propietaria. **Corrige la decisión previa de 2026-06-19 (NIM primario) y §2.**
 **El modelo no es el cuello de botella: no cambiar de modelo buscando arreglar esto.**
 
-### Dirección (acordada 2026-07-17, pendiente de ratificación)
-La salida no es un mejor clasificador: es **cambiar de tarea a COMPARACIÓN inter-medio**.
-La divergencia entre medios sobre el mismo hecho tiene base rate ~100% por construcción, no
-acusa (presenta hechos citables lado a lado y el lector juzga), y es literalmente el momento
-de valor declarado en §1. Unidad = el PAR de artículos, nunca el clúster completo (medido:
-19 artículos colapsan a 4 entradas en 504s).
+### Fase 3 v1 — IMPLEMENTACIÓN (2026-07-29)
+Esquema: `comparaciones` (por par, cache-key = par de hashes ordenado) + `resumenes` (por
+clúster, cache-key = sha256 del set de hashes). FK SET NULL. El análisis es CACHE DERIVADO:
+idempotente, borrable, reconstruible; su identidad es el contenido inmutable (hash), no el
+story_id volátil — esto resuelve el choque con el clustering full-recompute cada 6h.
 
+Módulo crawler/analisis_fase3.py. Principio: el LLM SEÑALA spans verbatim; el gate verbatim
+(subcadena literal) es la defensa arquitectónica — lo no-literal se descarta antes de
+guardar. El resumen usa 2 llamadas separadas: la síntesis solo ve spans verificados, nunca
+los artículos (anti-fabricación). Modelo: GLM-5.2.
+
+Restricción de escala (medida): el análisis por pares es O(n²). Requiere split de beats /
+agrupación temporal + tope de tamaño de clúster antes del backfill y del cron.
+
+Pendiente de §5: reescritura integral (carril per-artículo cerrado, veredictos, aritmética
+del FP como sección).
 ---
 
 ## 6. Clustering (Fase 2 — el corazón intelectual)

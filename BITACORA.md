@@ -14,6 +14,187 @@ ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
 
+### [2026-07-29] Esquema Fase 3: drop analyses vieja + create comparaciones/resumenes
+- `analyses` (carril per-artículo, columnas tecnicas/omisiones/resumen_neutral, article_id
+  único) confirmada VACÍA (count=0) -> DROP limpio, sin backup.
+- Creadas `comparaciones` (por par, unique hash_a/hash_b + CHECK hash_a<hash_b) y
+  `resumenes` (por clúster, unique cluster_key = sha256 del set ordenado de member_hashes).
+  Ambas con FK SET NULL a articles/stories (no CASCADE: no destruir análisis caro).
+- Aplicado a mano en editor de Supabase por Jota; espejado en /supabase/migrations/ por
+  Claude Code (doble migración). El archivo del repo es documental, NO re-ejecutable.
+- Nombres nuevos a propósito (no reusar `analyses`): esquema totalmente distinto, evitar
+  confusión futura.
+
+### [2026-07-22] GLM-5.2 SELLADO como modelo de Fase 3 — bake-off de v1-resumen
+
+Prototipamos v1-resumen (2 pasadas: corroboración por spans verificados + síntesis que
+solo ve los spans, no los artículos). El baseline Llama-3.3-70B falló el CASO TESTIGO
+Pizarro con DERIVA CAUSAL: combinó spans todos verdaderos en la frase falsa "el 26 de
+abril de 1990 la Fiscalía decidió no imponer medida" (1990 = fecha del magnicidio; la
+decisión es de 2026). Invisible al verificador mecánico (números y nombres existían).
+5/5 corridas.
+
+Bake-off (diag_bakeoff2.py, 4 clústeres incl. Pizarro como testigo, 3 corridas):
+- **Llama-3.3-70B:** desc 26.3%, cae en Pizarro, inestable. Descartado.
+- **Qwen3.5-122B:** PASA Pizarro (no deriva) PERO se niega a procesar noticias de 2026
+  ("no existe registro, mi conocimiento tiene fecha de corte") -> DESCALIFICADO para una
+  hemeroteca que archiva material reciente. Además infra inestable (429, HTTP 400
+  mrope, corrida de 279s).
+- **GLM-5.2:** GANA las 4 dimensiones. desc 2.1%, estabilidad 0.0 (12/12 dieron 5
+  hechos), 12/12 síntesis, 17s prom, 0 fallos, y NO rechaza fechas futuras. Pizarro
+  limpio 3/3. Lectura humana de las síntesis: fieles y claras.
+
+DECISIÓN: GLM-5.2 sellado para corroboración + síntesis + comparación. Baseline 70B
+retirado de Fase 3. Groq (decomisión 2026-08-16) resuelto de facto.
+
+HALLAZGO de método: éxito concluyente, fracaso no — la deriva del 70B era techo del
+modelo, no de la tarea. Antes de matar un diseño de generación, probar un modelo mejor.
+
+CAVEAT honesto: bake-off sobre 4 clústeres; GLM degradó "la Corte"->"una autoridad" en
+1 corrida (correcto pero impreciso). El verificador valida procedencia, no fidelidad
+semántica. Leer muestra a escala antes de publicar.
+
+### [2026-07-21] v1-comparación FIRMADA — solo-spans elimina la fabricación de raíz
+
+Prototipamos la comparación inter-medio en 4 corridas medidas (pares atómicos, 5x c/u,
+grounding verbatim mecánico + control Ñeque).
+
+Trayecto: (1) v1 con campos de texto libre -> grounding 24/24 OK pero contaminado por
+opinión y desfase temporal. (2) Compuerta es_mismo_hecho + regla temporal -> no probables
+(0 pares atómicos de opinión / gap ancho en el corpus; hallazgo: el confound temporal vive
+en clústeres GRANDES, no en pares). (3) Estabilidad 5x -> fabricación RECURRENTE (5/5) en
+salvedad del par Lorduy. (4) Endurecer salvedad -> la fabricación se DESPLAZÓ a agrega/
+enfoque (fantasma de encuadre: el error se mueve, no muere).
+
+DECISIÓN DE DISEÑO (raíz): la fabricación vive en la tarea de REDACTAR. Se quitó todo campo
+de texto libre; la salida es {medio, categoria, span VERBATIM}. El modelo SEÑALA, no redacta;
+el frontend explica. Resultado: 105 spans OK, 0 fabricación en 20 corridas. Confirmado leyendo
+el span: antes el modelo escribía "César Lorduy ha sido acusado..." (añadía "César", no literal,
+el filtro lo tumbaba); en solo-spans copió "Lorduy ha sido acusado..." (literal). No fue el
+filtro cazando: fue el modelo dejando de fabricar al no tener dónde.
+
+FIRMADO: enfoque + agrega (sólidas, groundeadas). Control Ñeque conserva salvedad 5/5.
+BETA: salvedad (dos grietas — ver deuda). NO probado: el RESUMEN.
+
+Contrato LLM v1 (congelado): unidad = PAR; per-artículo NO tiene LLM (Fase 3 vieja cerrada);
+ent_div (sin LLM) es la compuerta resumen/comparación.
+
+### [2026-07-21] Lectura inductiva — 5 patrones, v1 definida, corrección de método
+
+Leí 16 clústeres reales (diag_lectura_inductiva.py → lectura_inductiva.txt; 3 grupos:
+divergentes ≥3 medios, pares atómicos, control réplica). Jota leyó a mano el clúster
+electoral (calibración); yo induje sobre el resto. Patrones consolidados:
+
+1. **SELECCIÓN/ÉNFASIS** (dominante, groundeable, columna FUERTE): mismo hecho, cada
+   medio pone al frente otro hecho/reacción/cita. Ej. Informe ONU: mismo documento,
+   El Espectador titula la crisis y las críticas a la paz total; La Silla, la transición
+   "fluida" y los progresos. Beto Coral: El Espectador enmarca persecución de Trump;
+   El Colombiano destaca al republicano burlándose. ESTE es el payload de "leer entre
+   líneas".
+2. **PROFUNDIDAD/SALVEDAD** (aditivo, columna fuerte): quién añade contexto/advertencia.
+   Ñeque: El Espectador afirma la muerte; El Tiempo la marca "presunta, en verificación,
+   un video lo da por vivo". Diferencia epistémica real.
+3. **EVOLUCIÓN TEMPORAL disfrazada de divergencia** (CONFOUND): buena parte del ent_div
+   alto es la historia moviéndose. Usaquén pasa de "un hombre abusó" a "señalado
+   falsamente". Comparar nota temprana vs tardía = afirmar divergencia falsa. → guardarraíl
+   obligatorio de v1.
+4. **VALORACIÓN EN VOZ DEL MEDIO** (real, con patrón por medio — El Colombiano
+   editorializa más: "volvió a contradecirse", "agitó una narrativa de fraude"): juicio
+   normativo, columna débil, cementerio del FP. DIFERIDA.
+5. **VOCABULARIO (#1)**: muerto como feature. Lo real ("Casa de la Moneda"/"Imprenta
+   Nacional") es escaso; los verbos jugosos ("muere"/"habrían abatido") están enredados
+   con 1 y 3 y no se separan fiable.
+
+**Control validó la compuerta:** réplica (Catalina/eutanasia, pastor Lora, Metro) salió
+calcado (~0.72, misma cita textual de DescLab en los 3); divergentes ~0.97. ent_div separa
+aunque el absoluto esté inflado por NER + impureza.
+
+**Corrección de método (importante):** Claudio había afirmado que "leer entre líneas"
+exigía el patrón 4 (columna débil, peligroso). FALSO. El grueso lo da el patrón 1
+(selección), seguro y de columna fuerte. La comparación no es premio de consolación: es la
+misión, y es lo fácil para el LLM.
+
+**Decisión — v1:**
+- Features: resumen de lo corroborado [ent_div bajo] + "qué destaca cada medio / qué añade"
+  [ent_div alto].
+- Guardarraíles OBLIGATORIOS: ventana temporal/fase, filtro de rol, limpieza de boilerplate.
+- Diferido: patrones 4 y 5.
+- FALTA: validar el OUTPUT del LLM (solo se validó que el material existe). Es lo próximo.
+
+### [2026-07-20] Gate del carril inter-medio (a) — MEDIDO, dirección ratificada con alcance
+
+Corrí diag_divergencia.py (Tier 0, read-only, desechable) sobre stories/story_articles de
+PRODUCCIÓN — NO sobre cache_corpus.jsonl: la divergencia ya está calculada en el derivado,
+y leer la tabla es más veraz que recomputar desde un volcado de esquema no verificable.
+Sin ilike/seq-scan: solo selects por PK + paginación (no repite el 1101 del 2026-07-17).
+400 clústeres, 1682 arts clusterizados.
+
+**(a) RATIFICADA, con ALCANCE recortado.** Eje real: El Tiempo (76%), El Espectador (65%),
+El Colombiano (65%) — editorialmente distintos, hay qué comparar. PERO ≈69% de los
+clústeres son SOLO esos tres. NO se puede prometer "espectro completo": el producto compara
+el eje mainstream y hay que decirlo así.
+
+**Q1 — el proxy semántico está muerto por construcción.** score_divergencia p50=0.19: la
+compuerta coseno≥0.70 SELECCIONA por similitud, no queda dispersión semántica intra-clúster.
+La señal viva es divergencia de ENTIDADES (p50=0.80): separa réplica (ejemplos 0.29–0.44)
+de divergente (1.00) y RASTREA TIPO DE HECHO — institucional (cumbre, decreto, condena) =
+réplica; político/seguridad (Abelardo, operativo ACSN, Chalá, empalme) = divergente.
+Decisión de diseño servida por el dato: **la feature NO es uniforme.** Anuncio → resumen;
+hecho contestado → comparación.
+
+**El "17.028 pares" es un espejismo de agregación.** El 71% viene de 2 clústeres (128 y 90
+art = beats: empalme, elección). Excluyéndolos, el trabajo real sobre hechos discretos es
+~2.000 pares. El 55.8% de los clústeres es un solo par (2 art, 2 medios) — el caso atómico,
+el más limpio para construir/validar primero.
+
+**Orden de features por EVIDENCIA:** (1) resumen de lo corroborado [réplica]; (2) qué AÑADE
+cada versión [divergentes] — aditivo, nunca "qué omitió B"; (3) alineación de citas (74% con
+≥2 medios citando, ejemplos reales CNE-Abelardo, SGC-sismo — medir mismo-hablante);
+(4) vocabulario — NO probado (ver deuda).
+
+**Próxima unidad = lectura inductiva** (no un prompt): leer ~15 clústeres divergentes
+(titulares + párrafos), preguntar "¿qué hacen estos medios que un lector debería ver?".
+La taxonomía sale del corpus. Es el paso que la §5 nunca dio.
+
+### [2026-07-20] Mega-clústeres (beats) — MEDIDO, fix identificado, DIFERIDO por prioridad
+
+**Síntoma (Jota):** clústeres que "arrastran" un tema de dos semanas; el título de
+un artículo puntual no engloba. Ej: 4f3b3736 (empalme De la Espriella).
+
+**No fue regresión.** Compuertas intactas (IDF≥20 AND coseno≥0.70, ventana 72h);
+params de relación en valores validados. Ya fichado como "mega-historia" el 2026-06-27.
+
+**Causa raíz (medida, no supuesta):** el ALGORITMO, no el umbral. Componentes
+conexas (union-find) no tiene noción de densidad: una cadena de enlaces débiles a
+través de notas SINÓPTICAS DE ESTADO (grado 15–17: "¿Qué viene para el empalme…",
+"comenzó empalme…") funde 14 días en un nodo. Transitividad + notas-puente.
+Hipótesis del DIGEST como puente: FALSADA (los "Diario del empalme" salen grado 2).
+Diag: cluster_puentes.py — 128 nodos, 276 aristas, 34 puntos de articulación (27%),
+grafo ralo. NO es masa densa; es beat encadenado.
+
+**Alcance real (dry_run_comunidades.py, read-only, snapshot 6387 noticias):**
+Solo 2 de 400 clústeres son beats (>50 art). El resto ya son hechos limpios (mediana=2).
+Bug QUIRÚRGICO, no sistémico. La mediana global lo esconde — señal local, no agregada.
+
+**Fix identificado:** detección de comunidades (Louvain) sobre el MISMO grafo/compuertas.
+Parte los 2 beats en sub-hechos legibles y validados a ojo (De la Espriella → 5:
+designación/transición, 6 ministros, suspensión, Bula canciller, desobediencia Cepeda).
+
+**Bloqueador previo DERRIBADO:** el churn de uuid_estable que se temía (Tier 3 pesado)
+NO ocurre a esta escala. Louvain preserva los 400 ids (rotos=0), añade 5–6 nuevos,
+deja 381/381 clústeres sanos (≤12) intactos, en resoluciones 1.0–2.0.
+
+**DECISIÓN: diferido a backlog por PRIORIDAD, no por riesgo.** Bajo impacto medido
+(2/400, cosmético, no toca el pipeline per-artículo de Fase 3). Foco = salir de Fase 3
+con técnicas per-artículo. Prerrequisito del carril de divergencia inter-medio; retomar
+ahí. Receta lista: Louvain resolución ~1.6, seed fijo, mismas compuertas; re-validar
+churn en el snapshot del momento (crece ~1000 filas/día → el "rotos=0" puede cambiar).
+
+**Método (para el yo-futuro):** mis umbrales pre-fijados fallaron 2 sesiones seguidas
+por elegir métricas que promedian el fenómeno (proxy componentes-a-K; mediana global).
+Fijar umbral antes de correr sigue siendo correcto; elegir la métrica que AÍSLA la
+señal local es la parte que hay que cuidar.
+
 ### [2026-07-06] RTVC validado en vivo + filtro de teasers en crawler
 - Validación read-only de RTVC (57 art.): extraccion=trafilatura, es_parcial=0,
   secciones correctas, sin_procesar=0. Banco de 7 medios cerrado.
@@ -176,6 +357,108 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 
 ## Deuda técnica conocida
 
+### [2026-07-29] Costo cuadrático del análisis por pares — BLOQUEANTE del backfill
+C(n,2): 11=55, 90=4005 (~36h), 128=8128 (~73h). Necesita: (1) split de beats o agrupación
+por ventana temporal antes del backfill; (2) tope de tamaño de clúster como guardarraíl del
+cron (un clúster grande no puede colgar la corrida de 6h).
+
+### [2026-07-29] Síntesis: causalidad no respaldada (versión suave del error Pizarro)
+GLM une hechos verdaderos con conectores causales que los spans no sustentan. El verificador
+(números/nombres) no lo detecta. Mitigación futura: prohibir conectores causales en
+SYS_SINTESIS ("implicará", "debido a", "por lo que") o disclaimer visible en la UI.
+
+### [2026-07-29] Fallos de JSON transitorios de GLM (~0-3.6%)
+No sistemáticos (los 2 pares que fallaron se guardaron al reintentar). Absorbidos por
+try/except + retry. Vigilar la tasa en el backfill a escala.
+
+### [2026-07-22] Python 3.14 cuelga sockets SSL (httpx y requests) — BLOQUEANTE de prod
+- Síntoma: el `recv` del socket no respeta el timeout; una llamada colgó 57 min. Pasa con
+  httpx (streaming y no-streaming) y con requests. Traceback termina en `_sslobj.read`.
+- No es del código: es incompatibilidad de la versión de Python (3.14, recién salida) con
+  el stack. Mitigado en diags con POST no-streaming + timeout total + checkpoint jsonl,
+  pero puede colgar igual esporádicamente.
+- FIX: venv con Python 3.12 (LTS) para todo el stack, ANTES de correr cualquier LLM en el
+  pipeline de producción. Prompt para Claude Code cuando se aborde.
+
+### [2026-07-22] v1-resumen: la síntesis es la capa menos garantizable
+- El verificador (substring de números/nombres) valida PROCEDENCIA, no equivalencia
+  semántica ni relación causal. La deriva de Pizarro fue invisible a él.
+- Con GLM-5.2 el riesgo baja mucho pero no a cero (degradó un sujeto en 1/12). Regla:
+  leer una muestra de síntesis a escala antes de exponer en la web. La corroboración
+  (pasada 1) sí es 100% verificable; la síntesis (pasada 2) no.
+
+### [2026-07-21] salvedad es BETA: el filtro valida el span, no la categoría + caduca
+- Grieta 1 (categoría): el grounding verbatim garantiza que el span es literal, NO que la
+  categoría sea correcta. Un span con "preliminar" puede ser cita de fuente, no divergencia
+  de certeza entre los dos medios. Visto en el par del dron.
+- Grieta 2 (caducidad temporal, la señaló Jota): "presunto/en verificación" es un ESTADO
+  que cambia (día 0 presunto -> día 2 confirmado). Una salvedad mostrada tarde queda
+  desactualizada y deja mal parado al medio. enfoque/agrega son permanentes; salvedad no.
+- Condición de la beta: mostrar salvedad SIEMPRE con su fecha ("al 18-jul, en verificación")
+  -> registro histórico, no afirmación presente. Validación de la categoría (¿hay divergencia
+  real de certeza?) queda para v1.1.
+
+### [2026-07-21] Boilerplate se reporta como diferencia
+- El modelo devuelve "Lea más:", "En contexto:" (teasers de navegación) como `agrega`.
+  Groundeado -> el filtro verbatim NO lo tumba, pero es ruido, no divergencia editorial.
+- Guardarraíl obligatorio de v1: limpiar boilerplate del texto ANTES de mandarlo al LLM.
+
+### [2026-07-21] Bug de red: timeout read=None cuelga el proceso
+- En streaming, httpx.Timeout(read=None) espera indefinidamente si el proveedor no manda
+  [DONE]; el retry nunca dispara (no hay excepción). Colgó una corrida 40+ min.
+- Fix: read=30.0 -> ReadTimeout (TransportError) -> el retry existente lo maneja. Aplicar
+  en cualquier código de streaming, incluido el pipeline futuro y diag_fase3_articulo.py.
+
+### [2026-07-21] Impureza de clúster: roles y fases mezclados inflan ent_div
+- **Síntoma (leído en 16 clústeres):** un mismo "clúster" une explainer + resultado +
+  reacción + logística (clúster electoral) y fases temporales distintas (Usaquén: acusación
+  → exoneración). El ent_div alto mezcla divergencia editorial real con impureza.
+- **Consecuencia:** comparar dos artículos de fases/roles distintos produce "divergencia"
+  falsa. Es la causa raíz de los guardarraíles de v1 (ventana temporal + filtro de rol).
+- **Decisión:** no se arregla el clustering; se COMPARA con guardarraíl (misma ventana/fase,
+  mismo rol). El filtro de rol NO puede confiar solo en `tipo` (poco fiable entre medios).
+
+ ### [2026-07-21] Duplicación intra-medio en clústeres beat
+- **Síntoma:** clúster Javi (8 arts) = 5 notas de El Tiempo, URLs distintas pero
+  casi-duplicadas por ángulo. `colapsar_por_url` no las une (son URLs distintas).
+- **Consecuencia:** infla el conteo de pares y ensucia la comparación inter-medio (una nota
+  se "compara" contra 4 versiones casi iguales del mismo medio).
+- **Decisión:** evaluar dedup por similitud intra-medio al construir el split de beats. No
+  urgente hasta el pipeline; registrado para no re-descubrirlo.
+
+### [2026-07-20] Vorágine=0 y RTVC 4.2% en cobertura cruzada — deuda de PIPELINE
+- **Síntoma (medido):** en el grafo de clústeres (400), Vorágine aparece en 0 y RTVC en 17
+  (4.2%). Los ángulos que Arquitectura §4 justifica como "los que ningún otro cubre" están
+  AUSENTES de la cobertura cruzada — peor que su ~1.5% del corpus.
+- **Por qué importa:** afecta la premisa misma de divergencia, justo el carril al que se
+  pivota. "Espectro completo" con estos medios sería falso hoy.
+- **Causa: SIN medir (candidatas):** feed pobre / crawler que trae poco / hechos que no
+  coinciden por entidades+embeddings (nota independiente ≠ mismo hecho por las compuertas).
+- **Decisión:** NO se arregla a ciegas. Medir el porqué (Tier 0) antes de apoyar el producto
+  en esos ángulos. No bloquea (a) sobre el eje mainstream; sí acota lo que se puede prometer.
+
+  ### [2026-07-20] Beats = prerrequisito medido del pipeline de comparación (no cosmético)
+- **Medido:** 2 de 400 clústeres (128 y 90 art) generan el 71% de los 17.028 pares.
+- **Consecuencia:** un pipeline de comparación sin split trata 128 notas de 14 días como
+  "un hecho". Bajo el carril (a), el split de beats (Louvain, fichado y validado 2026-07-20:
+  res~1.6, seed fijo, mismas compuertas, churn=0) deja de ser diferido-cosmético y pasa a
+  PRERREQUISITO del pipeline de producción.
+- **Decisión/orden:** va DESPUÉS de la lectura inductiva (que decide qué feature) y ANTES de
+  cualquier pipeline. Re-validar churn en el snapshot del momento (crece ~1000 filas/día).
+
+  ### [2026-07-20] Feature #1 (vocabulario) SIN medir — el 82% fue un espejismo de canon()
+- **Síntoma:** el gate reportó 82% de clústeres "con material de vocabulario" (mismo actor,
+  ≥2 superficies, ≥2 medios). Al LEER los ejemplos: las superficies son variantes triviales
+  del mismo nombre (procuraduría/la procuraduría/procuraduría general; registraduría/
+  registraduría.; colombia/de colombia; gato negro/gato negro’).
+- **Causa (medida al leer):** bajo-merge de canon() + puntuación, NO encuadre. El encuadre
+  real (verbos "capturado"/"señalado", adjetivos, titulares) es INVISIBLE a la lista de
+  entidades NER.
+- **Decisión:** #1 sigue SIN medir. No se construye sobre este número. Se mide LEYENDO texto
+  en la próxima unidad. Aprendizaje: casi repetimos el pecado de la §5 (coronar un % sin leer
+  material); el volcado de ejemplos del diag fue lo que lo atrapó → mantener siempre ejemplos
+  en los diags de materia prima.
+  
 ### [2026-07-17] CRÍTICA — No existe oráculo de ground truth para Fase 3
 **Síntoma:** puesto frente a los 57 casos reales del censo, Jota —**autor de la definición de
 `arrastre`, autoridad de taxonomía del proyecto**— declaró no poder aplicarla con confianza.
@@ -1181,6 +1464,27 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 
 ## Ideas registradas (no son deuda, son evolución futura)
 
+### [2026-07-29] v2: resumen por DÍA-del-clúster + reevaluación per-artículo con GLM
+(Ver TRASPASO > Ideas para el detalle completo de ambas. La primera es la dirección fuerte
+post-v1: agrupación temporal que resuelve costo + confound + legibilidad, con síntesis por
+día anclada al timeline. La segunda: separar las muertes por aritmética vs por capacidad
+antes de reintentar cualquier pieza per-artículo con GLM.)
+
+### [2026-07-22] Ideas de esta sesión
+- Historias solo desde 3+ artículos (o 2 de medios distintos) — evaluación aparte (Jota).
+- Pipeline híbrido de modelos (barato para corroborar, fuerte para síntesis): con GLM
+  ganando ambas, no urge; optimización de costo futura.
+- Cache de prompt en comparación ordenando pares por primer artículo (prefijo compartido).
+
+### [2026-07-21] Patrón 4 (valoración en voz del medio) por extracción, no por juicio
+Reencuadre para una fase posterior: en vez de que el LLM dictamine "este medio editorializa"
+(normativo, columna débil, FP), que EXTRAIGA afirmaciones en voz del medio SIN atribución y
+el lector juzgue. Punto difícil ya identificado: distinguir hecho no atribuido ("las mesas
+abren a las 8am") de valor no atribuido ("el momento más emotivo") reintroduce el juicio.
+Testeable, no asumible. Fuera de v1.
+
+Sub-clustering por Louvain: cuando se retome divergencia inter-medio, es prerrequisito. Explorar si la resolución debe ser adaptativa al tamaño del clúster en vez de global.
+
 ### [2026-07-17] Taxonomía INDUCTIVA en vez de deductiva (si se reabre taxonomía)
 La §5 se escribió ANTES de que existiera el corpus: son categorías de manual de retórica,
 importadas de la literatura de propaganda, no inducidas de lo que los medios colombianos
@@ -1710,6 +2014,25 @@ clúster necesita destilado, no un botón más.
 ---
 
 ## Notas de operación
+
+### [2026-07-29] Pipeline Fase 3 v1 integrado y probado end-to-end
+Módulo crawler/analisis_fase3.py (Claude Code). Contrato: 3 prompts congelados de los diag
+validados. Resumen = 2 llamadas SEPARADAS (corroboración -> síntesis) para que la síntesis
+solo vea spans verificados (anti-fabricación). Matching por slug. Gate verbatim sobre TODA
+lista de spans (Claude Code lo extendió a solo_un_medio — correcto). Caché por hash de
+contenido. Robustez: try/except por ítem + retry (lección del bake-off aplicada al módulo).
+
+Probado sobre story 84a548f5 (11 arts, 55 pares): corre sin colgar (3.14 tolerable con
+no-streaming), caché confirmado (2ª corrida 54/56 skip, reanuda incremental), fallos de
+JSON transitorios de GLM (no sistemáticos, desaparecen al reintentar, ~0-3.6%).
+
+HALLAZGO clave: costo CUADRÁTICO. 55 pares = 30 min. Beats de 90 y 128 arts = 36h y 73h.
+El split de beats deja de ser "prerrequisito" y pasa a BLOQUEANTE absoluto del backfill:
+sin él, una corrida no termina y el cron nunca cierra.
+
+Síntesis leída: buena pero con causalidad no respaldada ("cierre de 14 embajadas... lo que
+implicará romper relaciones únicamente con Cuba y Nicaragua"). El ojo de Jota lo cazó; el
+verificador no lo cubre. Confirma que la síntesis es la capa menos garantizable.
 
 ### 2026-07-17 (2ª sesión) — CARRIL PER-ARTÍCULO CERRADO. La aritmética del falso positivo.
 
