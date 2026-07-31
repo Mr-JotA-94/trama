@@ -23,6 +23,10 @@ import time
 import hashlib
 import argparse
 import unicodedata
+from collections import defaultdict
+from datetime import datetime, timezone, date
+from itertools import combinations
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
@@ -49,6 +53,8 @@ BACKOFF_BASE = 2          # segundos: 2, 4, 8, 16...
 
 MIN_PALABRAS_SPAN = 6     # piso de longitud para que un span cuente como cita real,
                            # no una coincidencia trivial de 2-3 palabras comunes.
+
+BOGOTA = ZoneInfo("America/Bogota")  # ventana temporal = día calendario en hora local
 
 # ---------------------------------------------------------------------
 # Prompts (system) — HARDCODEADOS a propósito (auditar el prompt exacto que produjo
@@ -375,6 +381,65 @@ def _prompt_usuario_sintesis(hechos_validos):
 
 
 # =======================================================================
+# Selección de pares (ventana temporal + colapso 1-por-medio-por-ventana)
+# ---------------------------------------------------------------------
+# La comparación exhaustiva C(n,2) sobre todo el clúster es INVIABLE a escala
+# (costo cuadrático: un clúster de 249 artículos = 30.876 pares) Y produce
+# divergencias falsas: comparar una nota temprana contra una tardía del mismo
+# hilo confunde "la historia se movió" con "los medios divergen" (confound
+# temporal, patrón 3, guardarraíl obligatorio de v1).
+#
+# Dos defensas, con roles distintos (no confundir):
+#   - La VENTANA (día calendario Bogotá) ataca el confound temporal: solo se
+#     comparan versiones contemporáneas.
+#   - El COLAPSO 1-por-medio-por-ventana ataca el costo: techo duro C(medios,2)
+#     por ventana = C(7,2)=21 pares como máximo, por aritmética, no por umbral.
+#
+# Medido sobre el corpus real (diag_ventanas, 2026-07-29): exhaustivo 35.174
+# pares (~322h LLM) -> este esquema 973 pares (~9h). Corte de medianoche = 0
+# pares perdidos en el corpus actual (ciclo de publicación diurno); re-medir a
+# escala antes de asumir que sigue en 0.
+# =======================================================================
+
+def _dia_bogota(a):
+    """Día calendario (date) en America/Bogota del artículo, clave de ventana.
+    Mismo criterio de fecha que el resto del módulo (_fecha_de: publicación, con
+    captura como fallback) y mismo parseo que clustering_fase2.cuando(). Supabase
+    devuelve timestamptz con zona; si por lo que sea llega un naive, se asume UTC
+    (lo que Supabase almacena) para no depender de la hora local de la máquina —
+    en CI eso sería UTC, en local la de Jota, y las ventanas divergirían."""
+    iso = _fecha_de(a)
+    if not iso:
+        # Sin ninguna fecha (0% del corpus medido). No se pierde: cae en una
+        # ventana sentinela común, donde se compara exhaustivamente con los otros
+        # sin fecha. Caso degenerado y raro; se avisa para que no pase inadvertido.
+        print(f"[fase3] ADVERTENCIA: artículo {a.get('id')} sin fecha; ventana sentinela")
+        return date.min
+    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BOGOTA).date()
+
+
+def pares_por_ventana(comparables):
+    """Genera los pares (a, b) a comparar bajo el esquema ventana-día + colapso.
+    Agrupa por día-Bogotá; dentro de cada día colapsa a un artículo por medio (el
+    más reciente, vía _un_articulo_por_medio) y emite C(medios,2) de esa ventana.
+
+    Rinde pares crudos: analizar_par sigue siendo el dueño del descarte mismo-medio/
+    mismo-hash y del caché por (hash_a,hash_b). Aquí NO se filtra ni se cachea — esta
+    función solo decide QUÉ pares existen; la unicidad y la idempotencia viven abajo.
+    Función pura y determinista: el backfill/cron futuro la reutiliza tal cual."""
+    ventanas = defaultdict(list)
+    for a in comparables:
+        ventanas[_dia_bogota(a)].append(a)
+    for dia in sorted(ventanas):
+        representantes = _un_articulo_por_medio(ventanas[dia])
+        for x, y in combinations(representantes, 2):
+            yield x, y
+
+
+# =======================================================================
 # Análisis
 # =======================================================================
 
@@ -538,23 +603,27 @@ def main():
     # puede tumbar el resto del análisis: se registra el fallo y se sigue con el
     # próximo par/clúster. El backfill real correrá sobre miles de pares; un solo
     # crash no puede volver a correr todo desde cero.
-    for i in range(len(comparables)):
-        for j in range(i + 1, len(comparables)):
-            try:
-                resultado = analizar_par(comparables[i], comparables[j])
-            except Exception as e:
-                fallidos += 1
-                print(f"  par [{i},{j}] — FALLO: {e}")
-                if isinstance(e, ErrorParseoJSON):
-                    print(f"    crudo: {e.crudo[:300]!r}")
-                continue
-            if resultado is None:
-                saltados += 1
-                print(f"  par [{i},{j}] — skip (caché, mismo hash o mismo medio)")
-                continue
-            guardar_comparacion(resultado)
-            guardados += 1
-            print(f"  par [{i},{j}] — guardado")
+    pares = list(pares_por_ventana(comparables))
+    print(f"Pares a evaluar (ventana-día + colapso): {len(pares)} "
+          f"(exhaustivo habría sido {len(comparables)*(len(comparables)-1)//2})")
+
+    for x, y in pares:
+        etq = f"{x['medio_slug']}×{y['medio_slug']} {x['hash_sha256'][:6]}/{y['hash_sha256'][:6]}"
+        try:
+            resultado = analizar_par(x, y)
+        except Exception as e:
+            fallidos += 1
+            print(f"  par {etq} — FALLO: {e}")
+            if isinstance(e, ErrorParseoJSON):
+                print(f"    crudo: {e.crudo[:300]!r}")
+            continue
+        if resultado is None:
+            saltados += 1
+            print(f"  par {etq} — skip (caché, mismo hash o mismo medio)")
+            continue
+        guardar_comparacion(resultado)
+        guardados += 1
+        print(f"  par {etq} — guardado")
 
     try:
         resumen = analizar_cluster(args.story_id, articulos)
