@@ -177,16 +177,21 @@ def colapsar_por_url(articulos):
             por_url[u] = a
     return list(por_url.values())
 
-# Boletines-agregador (live-blog diario de La Silla Vacía: "Duerma informado con las
-# movidas/claves de este ..."). NO son cobertura primaria de UN hecho: recopilan MUCHOS
-# temas del día, y por eso el clustering los usa como PUENTE entre historias que no tienen
-# relación real, inflando y fusionando clústeres. Se excluyen del PIPELINE (IDF + clustering),
-# no del ARCHIVO: siguen guardados como contenido público (inmutabilidad intacta). Se
-# identifican por slug de URL, no por `tipo`: el crawler los marca 'noticia' por defecto
-# porque su URL (/en-vivo/) no matchea ningún patrón especial de clasificar_tipo.
-# Filtro específico ('duerma-informado'), NO '/en-vivo/': esa sección puede tener cobertura
-# en vivo legítima de un evento, y no queremos falsos positivos que descarten periodismo real.
-PATRON_BOLETIN = re.compile(r"duerma-informado", re.IGNORECASE)
+# Boletines-agregador de La Silla Vacía: "Duerma informado con las movidas/claves de este ..."
+# y su gemelo matutino "Desayune informado con las claves del ...". NO son cobertura primaria
+# de UN hecho: recopilan MUCHOS temas del día, y por eso el clustering los usa como PUENTE
+# entre historias sin relación, inflando/fusionando clústeres (y, aguas abajo, contaminan la
+# síntesis-por-día con hechos ajenos). Se excluyen del PIPELINE (IDF + clustering), no del
+# ARCHIVO: siguen guardados como contenido público (inmutabilidad intacta).
+#
+# NO se incluye "Diario del empalme de Abelardo: <tema>": pese al formato de serie, cada
+# entrega es MONOTEMÁTICA (un hecho concreto tras los dos puntos) — es cobertura legítima
+# on-topic, no un agregador. Excluirla sería un falso positivo que borra periodismo real.
+#
+# Filtro por slug de URL, no por `tipo`: el crawler los marca 'noticia' por defecto porque su
+# URL (/en-vivo/) no matchea ningún patrón especial. Específico ('(duerma|desayune)-informado'),
+# NO '/en-vivo/': esa sección puede tener cobertura en vivo legítima de un evento.
+PATRON_BOLETIN = re.compile(r"(?:duerma|desayune)-informado", re.IGNORECASE)
 
 def es_boletin(a):
     return bool(PATRON_BOLETIN.search(a.get("url") or ""))

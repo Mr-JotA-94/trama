@@ -28,3 +28,5 @@ Thumbs.db
 Scripts_calibración-diagnóstico/
 
 crawler/diag_*.py
+crawler/diag_*.md
+crawler/lectura_*.md
