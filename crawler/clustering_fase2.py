@@ -177,6 +177,20 @@ def colapsar_por_url(articulos):
             por_url[u] = a
     return list(por_url.values())
 
+# Boletines-agregador (live-blog diario de La Silla Vacía: "Duerma informado con las
+# movidas/claves de este ..."). NO son cobertura primaria de UN hecho: recopilan MUCHOS
+# temas del día, y por eso el clustering los usa como PUENTE entre historias que no tienen
+# relación real, inflando y fusionando clústeres. Se excluyen del PIPELINE (IDF + clustering),
+# no del ARCHIVO: siguen guardados como contenido público (inmutabilidad intacta). Se
+# identifican por slug de URL, no por `tipo`: el crawler los marca 'noticia' por defecto
+# porque su URL (/en-vivo/) no matchea ningún patrón especial de clasificar_tipo.
+# Filtro específico ('duerma-informado'), NO '/en-vivo/': esa sección puede tener cobertura
+# en vivo legítima de un evento, y no queremos falsos positivos que descarten periodismo real.
+PATRON_BOLETIN = re.compile(r"duerma-informado", re.IGNORECASE)
+
+def es_boletin(a):
+    return bool(PATRON_BOLETIN.search(a.get("url") or ""))
+
 def cargar_articulos():
     """Trae artículos con embedding y entidades. Pagina para no reventar RAM."""
     filas, desde = [], 0
@@ -193,7 +207,15 @@ def cargar_articulos():
     # Normalizar embeddings de string a lista UNA vez, al cargar.
     for a in filas:
         a["embedding"] = np.asarray(_parse_embedding(a["embedding"]), dtype=np.float32)
-    filas = colapsar_por_url(filas) 
+    filas = colapsar_por_url(filas)
+    # Excluir boletines-agregador del pipeline (ANTES de IDF). El print lista los excluidos
+    # para verificar en la 1a corrida que el patrón no atrapa periodismo legítimo.
+    boletines = [a for a in filas if es_boletin(a)]
+    if boletines:
+        print(f"Excluidos {len(boletines)} boletines-agregador (archivo intacto):")
+        for a in boletines:
+            print(f"    - {a['titulo'][:70]}  |  {a['url']}")
+    filas = [a for a in filas if not es_boletin(a)]
     return filas
 
 def cuando(a):
