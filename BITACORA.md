@@ -9,10 +9,35 @@ yo-del-futuro entienda el estado actual sin tener que reconstruirlo de memoria.
 
 ## Operaciones sobre datos (truncates y borrados)
 
+
 Regla de Trama: el archivo es inmutable, nada se borra. Los truncates de abajo
 ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún no
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
+
+[2026-07-30] SPLIT DE BEATS: selección de pares por ventana temporal (costo cuadrático RESUELTO)
+
+Unidad: reemplazar la comparación exhaustiva C(n,2) de Fase 3 por una selección de pares que quepa a escala SIN destruir el guardarraíl temporal. Tier 2, ningún load-bearing tocado.
+
+DECISIÓN DE DISEÑO — esquema C, con dos defensas de ROLES DISTINTOS (no confundir):
+
+La VENTANA (día calendario America/Bogota) ataca el CONFOUND TEMPORAL (patrón 3, guardarraíl obligatorio de v1): solo se comparan versiones contemporáneas. Sin ella se compararía nota temprana vs tardía del mismo hilo = divergencia falsa.
+El COLAPSO 1-por-medio-por-ventana ataca el COSTO: techo duro C(medios,2) por ventana = C(7,2)=21 pares máximo, por ARITMÉTICA, no por umbral afinable. Corrección de rumbo importante: Claudio había vendido la ventana como "resuelve costo Y confound de una". FALSO — lo desmintieron los datos del diag. La ventana resuelve el confound; el COLAPSO resuelve el costo. Se mantienen ambas por razones separadas. Si alguien propone quitar la ventana "porque el colapso ya acota el costo", ese es el argumento equivocado.
+
+Louvain descartado para ESTA unidad (aunque válido para calidad de clúster): es Tier 3, cambia qué es una "historia" en el producto, y NO resuelve el confound (un sub-beat puede abarcar semanas) ni acota n. Sigue backlogueado.
+
+DIAGNÓSTICO Tier 0 (diag_ventanas.py, DESECHABLE, sobre corpus real, 2225 arts en clústeres). Umbrales pre-registrados ANTES de correr — los 4 pasaron:
+
+fecha_publicacion nulls < 10% -> 0.0%
+backfill total ≤ 12h LLM -> 8.9h (esquema C)
+ningún clúster > 500 pares -> máx 114
+corte de medianoche < 15% de C -> 0.0% (0 pares perdidos) Números: exhaustivo 35.174 pares (~322h) -> B (solo ventana) 4.813 -> C (ventana+colapso) 973. HALLAZGO: el colapso hace la mayor parte del trabajo de costo (B->C: 4813->973), no la ventana (la ventana está por el confound, no por el ahorro).
+
+IMPLEMENTACIÓN (analisis_fase3.py): _dia_bogota(a) (día-Bogotá, mismo parseo que clustering_fase2.cuando(); si llega naive asume UTC, para no depender de la hora local de la máquina — en CI sería UTC, en local la de Jota, y las ventanas divergirían) + pares_por_ventana() (agrupa por día, colapsa con _un_articulo_por_medio, emite C(medios,2)). Reemplazó el doble loop en main(). Función PURA y determinista (probado: estable ante reordenamiento del input, lo que importa para la idempotencia del caché). Validada en aislamiento con 5 casos sintéticos antes de tocar el repo.
+
+ASIMETRÍA INTENCIONAL (dejar por escrito): comparación colapsa 1-por-medio POR VENTANA (versiones contemporáneas); corroboración/resumen colapsa POR CLÚSTER (estado más reciente del hecho). No es inconsistencia: cada pasada quiere una cosa distinta.
+
+VALIDACIÓN REAL: story 54b1342f (posesión de Abelardo de la Espriella, 253 arts). 115 pares por ventana vs 31.878 exhaustivo. Resultado: 103 guardados, 12 skip (caché), 1 fallido. ~53 min. Latencia ~31s/par, coincide con la estimación de diseño (33s). Unidad cerrada: el módulo corre a la latencia diseñada y el mega-clúster termina end-to-end.
 
 ### [2026-07-29] Esquema Fase 3: drop analyses vieja + create comparaciones/resumenes
 - `analyses` (carril per-artículo, columnas tecnicas/omisiones/resumen_neutral, article_id
@@ -356,6 +381,24 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 ---
 
 ## Deuda técnica conocida
+
+[2026-07-30, BLOQUEANTE BACKFILL] Backfill completo ~8.4h > límite 6h de GitHub Actions
+
+MEDIDO (no supuesto): 973 pares del corpus × ~31s/par ≈ 8.4h. Un runner estándar de Actions corta el job a 6h. El backfill de una sola pasada NO cabe. Síntoma: N/A todavía (aún no se intentó en CI). Causa: latencia intrínseca de GLM (modelo de razonamiento) × volumen de pares. DECISIÓN: no es parche de esta unidad (el header del módulo dice que el backfill masivo "es otra unidad", y lo es). Reactivación: la unidad de backfill diseña chunking reanudable por rango de clústeres (el caché por hash ya hace la reanudación gratis), o self-hosted runner, o partir en varios jobs. NO correr en la laptop.
+
+[2026-07-30] Calidad de comparación GLM sin auditar a escala
+
+Hay 103 comparaciones reales de GLM en DB (clúster 54b1342f) que NADIE ha leído. El gate verbatim valida PROCEDENCIA (el span existe literal), NO fidelidad ni utilidad (¿la divergencia marcada es real y relevante, o ruido groundeado?). Deuda ligada: verificar si SYS_COMPARACION se calibró con GLM o con el 70B retirado (diag_v1_solospans.py). Si fue con el 70B, "arrastre FN=0/FP=0" NO se transfiere gratis a GLM. DECISIÓN: leer una muestra ANTES de backfilear los 973. Es la regla "ningún % corona una feature sin leer material real" aplicada al modelo nuevo.
+
+[2026-07-30] Fallo de JSON de GLM: truncamiento (actualiza la deuda de "fallos transitorios")
+
+Nuevo dato sobre la deuda vieja [2026-07-22] "fallos JSON ~0-3.6%". En la corrida real: 1/115 = 0.87%. El crudo del par c3f0d7/467e43 (la-silla-vacia×el-tiempo) mostró el JSON CORTADO a mitad de un span ("...al esti"), no solo preámbulo. Es decir: GLM (a) antepone ```json (json_limpio=no en 3/3 del diag de latencia — el parser tolerante lo rescata) y (b) a veces TRUNCA la generación a mitad de valor. El parser rescata el preámbulo pero NO el truncamiento; por eso este par cayó a ErrorParseoJSON tras el reintento. Impacto: bajo, recuperable por caché (relanzar salta lo guardado y reintenta solo el fallido). Reactivación: si la tasa sube a escala, revisar si es max_tokens (6000) insuficiente para pares largos, o endurecer el parser para pedir continuación.
+
+┌──────────────────────────────────────────────────────────────────────────────┐ │ SECCIÓN DESTINO: Deuda técnica conocida (nota operativa de entorno; junto a │ │ las notas de GitHub Actions / WinError / Vercel) │ └──────────────────────────────────────────────────────────────────────────────┘
+
+[2026-07-30, OPERATIVA] Windows suspende corridas locales largas
+
+"12 pares en una noche" pareció bug de timeout/streaming (Python 3.14). NO lo era. La latencia real medida (diag_latencia_v2: ~31s/par, 1 llamada HTTP, 0 reintentos, status 200) coincidía con la estimación — el código nunca fue el lento. Causa real: Windows tenía sleep-timeout AC por defecto en 5min y suspendía la laptop; el proceso solo avanzaba en los ratos despierta (ráfagas con huecos largos). Mitigación durante corridas largas: powercfg /change standby-timeout-ac 0 (revertir a 5 al terminar; el monitor sí puede apagarse, no interrumpe el proceso). Lección de método: antes de culpar al código, descartar el entorno con una medición del camino real.
 
 ### [2026-07-29] Costo cuadrático del análisis por pares — BLOQUEANTE del backfill
 C(n,2): 11=55, 90=4005 (~36h), 128=8128 (~73h). Necesita: (1) split de beats o agrupación
@@ -1463,6 +1506,14 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
+
+[2026-07-30] Circuit-breaker por corrida (seguro, no arquitectura)
+
+Con el colapso, un clúster no puede reventar el cron aunque tenga 500 artículos (techo C(7,2)/ventana). El "tope de tamaño de clúster" que se planeaba como guardarraíl de costo YA NO hace falta para eso. Idea opcional: un circuit-breaker que aborte y avise si el total de pares a generar supera un umbral — seguro barato contra un bug futuro (p. ej. explosión de outlet_id), NO mecanismo de costo. Belt-and-suspenders. No construir salvo que aparezca la necesidad.
+
+[2026-07-30] Louvain reforzado: candidato #1 = clúster 54b1342f (253 arts)
+
+El clúster de la posesión de Abelardo de la Espriella tiene 253 artículos — más grande que los 128/90 ya documentados. La ventana resolvió su COSTO (115 pares) y el confound temporal, pero NO separa beats semánticos dentro de un mismo día (dos hechos distintos del día se comparan igual; la compuerta es_mismo_hecho lo absorbe, a costo de llamadas desperdiciadas — desperdicio ≠ mentira, tolerable en v1). Louvain (res 1.6, churn 0) seguiría mejorando la calidad de clúster; este es su candidato #1 cuando se retome, después del backfill de v1.
 
 ### [2026-07-29] v2: resumen por DÍA-del-clúster + reevaluación per-artículo con GLM
 (Ver TRASPASO > Ideas para el detalle completo de ambas. La primera es la dirección fuerte
