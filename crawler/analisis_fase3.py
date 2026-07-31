@@ -365,7 +365,7 @@ def _un_articulo_por_medio(articulos):
     for a in articulos:
         slug = a["medio_slug"]
         actual = por_medio.get(slug)
-        if actual is None or _fecha_de(a) > _fecha_de(actual):
+        if actual is None or (_fecha_de(a), a["hash_sha256"]) > (_fecha_de(actual), actual["hash_sha256"]):
             por_medio[slug] = a
     return list(por_medio.values())
 
