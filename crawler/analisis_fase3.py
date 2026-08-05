@@ -44,8 +44,9 @@ sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 # --- Config del modelo (fija, no parametrizable por ahora) ---
 MODELO = "zai-org/GLM-5.2"
 TEMPERATURA = 0.15
-MAX_TOKENS = 6000
-PROMPT_VERSION = "v1"
+MAX_TOKENS = 16000
+PROMPT_VERSION = "v2"   # v2: SYS_CORROBORA pasa de "máximo 5" (cuota) a techo-con-prioridad
+                        # (hasta 6/4, ordenado por fuerza de corroboración, sin relleno).
 
 TIMEOUT_TOTAL = 120       # segundos, timeout total de la llamada (no por-socket)
 MAX_REINTENTOS = 4
@@ -109,7 +110,8 @@ Devuelve dos listas:
 REGLAS DURAS:
 - "span" = subcadena EXACTA del titular o cuerpo de ESE medio (mínimo 6 palabras seguidas), copiada carácter por carácter. Sin parafrasear, sin unir fragmentos separados, sin mezclar textos de medios distintos.
 - "medio" = el slug exacto dado.
-- Priorizá los hechos NUCLEARES (qué pasó, dónde, a quién, cuántos). Máximo 5 hechos corroborados y 4 de un solo medio.
+- Ordená los hechos de MAYOR a MENOR corroboración: primero los que confirman más medios, luego los que confirman menos. Incluí solo los hechos NUCLEARES que estructuran la noticia (qué pasó, dónde, a quién, cuántos), del más central al menos central.
+- Techo, NO cuota: HASTA 6 hechos corroborados y HASTA 4 de un solo medio. Si el día tiene menos hechos centrales, devolvé menos: tres bien corroborados valen más que seis forzados. NO rellenes para llegar al tope.
 - No incluyas enlaces de navegación ni promociones ("Lea también", "En contexto", "Le puede interesar", "Siga leyendo"): NO son hechos.
 - Si dudás de que un fragmento esté literal, no lo incluyas.
 
@@ -365,6 +367,12 @@ def _un_articulo_por_medio(articulos):
     for a in articulos:
         slug = a["medio_slug"]
         actual = por_medio.get(slug)
+        # Desempate TOTAL por hash: cuando dos capturas del mismo medio en la misma
+        # ventana comparten _fecha_de exacta (recaptura sin cambio de fecha_publicacion),
+        # el '>' estricto dejaba el ganador al orden de entrada -> conjunto de pares no
+        # determinista -> el caché reanudable no reconoce el trabajo previo. Con la tupla
+        # (fecha, hash) el orden es total e independiente del input; cuando las fechas
+        # difieren, la fecha domina y el comportamiento es idéntico al anterior.
         if actual is None or (_fecha_de(a), a["hash_sha256"]) > (_fecha_de(actual), actual["hash_sha256"]):
             por_medio[slug] = a
     return list(por_medio.values())
@@ -528,11 +536,14 @@ def analizar_cluster(story_id, articulos):
         if fuente and span_valido(item.get("span", ""), fuente["contenido_visible"] or ""):
             solo_un_medio_validos.append(item)
 
-    # Pasada 2: síntesis — el LLM ve SOLO los spans ya verificados, nunca los artículos.
-    resultado_sintesis = llamar_llm_json(SYS_SINTESIS, _prompt_usuario_sintesis(hechos_validos))
-    sintesis_texto = resultado_sintesis.get("sintesis")
-
-    _verificar_sintesis_parcial(sintesis_texto, hechos_validos)
+    # Pasada 2 (síntesis única) RETIRADA: la reemplaza sintetizar_por_dia (digest por
+    # ventana-día). La síntesis única sobre spans corroborados combinaba hechos de días
+    # distintos en una cadena causal que ningún span sostenía (F5, caso Popayán 25-jul).
+    # El troceo por día lo elimina por construcción (una foto de un día no encadena en el
+    # tiempo). La corroboración (hechos_corroborados/solo_un_medio) NO cambia; sigue siendo
+    # el aporte firmado de `resumenes`. `sintesis` queda NULL aquí a propósito.
+    # (SYS_SINTESIS, _prompt_usuario_sintesis y _verificar_sintesis_parcial quedan sin uso:
+    #  candidatos a limpieza en un commit posterior, no se tocan ahora para acotar el diff.)
 
     return {
         "cluster_key": cluster_key,
@@ -541,10 +552,161 @@ def analizar_cluster(story_id, articulos):
         "member_hashes": hashes,
         "hechos_corroborados": hechos_validos,
         "solo_un_medio": solo_un_medio_validos,
-        "sintesis": sintesis_texto,
+        "sintesis": None,
         "modelo": MODELO,
         "prompt_version": PROMPT_VERSION,
     }
+
+
+# =======================================================================
+# Síntesis por día (digest por ventana-día con atribución de medios)
+# ---------------------------------------------------------------------
+# Reemplaza la síntesis-única-por-clúster. Cada día del clúster recibe su propio digest
+# breve, con los CUERPOS COMPLETOS de ese día (todas las voces, colapsadas por URL). Validado
+# en diag_sintesis_por_dia (2026-07-31): cero F5 intra-día sobre el caso Popayán, sin
+# structural collapse hasta 234k chars/día (Louvain NO es prerequisito), longitud variable
+# según densidad del día (aceptada por diseño). Idempotente por dia_key: se salta los días ya
+# analizados, igual que analizar_cluster con cluster_key.
+# =======================================================================
+
+SYS_SINTESIS_DIA = """Eres un redactor de una hemeroteca forense. Recibes los ARTÍCULOS COMPLETOS que varios medios colombianos publicaron EN UN MISMO DÍA sobre una misma historia en desarrollo. Escribí una síntesis BREVE de lo que se movió ESE día.
+
+EXTENSIÓN: máximo 2-3 frases (unas 50 palabras). Si el día tuvo poco, una sola frase.
+
+LÍMITES (de veracidad, no de estilo):
+- Usá ÚNICAMENTE información de los textos provistos. Nada de fuera.
+- No inventes ni ajustes cifras, fechas, lugares ni nombres. Copiá las cifras tal como aparecen.
+- Si afirmás que algo CAUSÓ o llevó a otra cosa, esa relación debe estar afirmada en los textos de ESTE día. Si no explican el porqué, decí qué pasó SIN causa. No rellenes causas.
+- Es la foto de UN día: NO anticipes lo que pasará después, NO expliques antecedentes que no estén en estos textos. Solo lo que se reportó hoy.
+- Sin adjetivos de valoración; tono factual y sobrio.
+
+FORMATO — responde ÚNICAMENTE este JSON, sin markdown ni texto extra:
+{"sintesis": "máximo 2-3 frases"}"""
+
+
+def _dia_key(member_hashes):
+    """Idempotencia del día: sha256 del set ordenado de hash_sha256 de los artículos del día.
+    Mismo día, mismos artículos -> misma clave -> no se re-analiza. Análogo a cluster_key_de."""
+    ordenados = sorted(set(member_hashes))
+    return hashlib.sha256("|".join(ordenados).encode("utf-8")).hexdigest()
+
+
+def dia_ya_existe(dia_key):
+    fila = (sb.table("resumenes_dia").select("id")
+            .eq("dia_key", dia_key).limit(1).execute().data)
+    return bool(fila)
+
+
+def _colapsar_por_url_dia(articulos):
+    """Colapsa capturas a artículos únicos DENTRO del día (una nota editada = varias capturas,
+    mismo url, hash distinto; representante = última captura). El átomo es la url, igual que
+    clustering_fase2.colapsar_por_url."""
+    por_url = {}
+    for a in articulos:
+        u = a["url"]
+        clave = a.get("fecha_captura") or _fecha_de(a)
+        if u not in por_url or clave > (por_url[u].get("fecha_captura") or _fecha_de(por_url[u])):
+            por_url[u] = a
+    return list(por_url.values())
+
+
+def _prompt_sintesis_dia(arts_dia):
+    bloques = "\n\n===\n\n".join(_bloque_medio(a) for a in arts_dia)
+    return ("Artículos completos publicados el MISMO día sobre una historia en desarrollo. "
+            "Escribí la síntesis breve de ese día. Responde SOLO el JSON.\n\n" + bloques)
+
+
+def _prompt_corrobora_dia(por_medio):
+    """Un bloque por MEDIO. Si el medio publicó varias notas ese día, se unen en su bloque:
+    el corroborador sigue viendo 'un medio, una voz' (premisa de SYS_CORROBORA) SIN perder
+    los sub-hechos de las notas secundarias."""
+    bloques = []
+    for slug, arts in por_medio.items():
+        partes = [f"TITULAR: {a['titulo']}\n\nTEXTO:\n{a['contenido_visible'] or ''}" for a in arts]
+        cuerpo = "\n\n--- (otra nota del mismo medio, mismo día) ---\n\n".join(partes)
+        bloques.append(f"MEDIO: {slug}\nFECHA: {_fecha_de(arts[0])}\n\n{cuerpo}")
+    return "\n\n===\n\n".join(bloques)
+
+
+def _corroborar_dia(por_medio):
+    """por_medio: {slug: [notas del medio ese día]}. Corrobora entre medios DISTINTOS. El gate
+    valida cada span contra el texto UNIDO de todas las notas de su medio ese día (así un hecho
+    que aparece en una nota secundaria del medio también cuenta). Idéntica lógica de gate que
+    analizar_cluster: un hecho corroborado sobrevive solo con spans verbatim de >=2 medios."""
+    texto_por_medio = {slug: " ".join((a["contenido_visible"] or "") for a in arts)
+                       for slug, arts in por_medio.items()}
+    resultado = llamar_llm_json(SYS_CORROBORA, _prompt_corrobora_dia(por_medio))
+
+    hechos_validos = []
+    for hecho in resultado.get("hechos_corroborados", []):
+        spans_validos, medios_vistos = [], set()
+        for s in hecho.get("spans", []):
+            fuente = texto_por_medio.get(s.get("medio"))
+            if fuente and span_valido(s.get("span", ""), fuente):
+                spans_validos.append(s)
+                medios_vistos.add(s["medio"])
+        if len(medios_vistos) >= 2:
+            hechos_validos.append({"spans": spans_validos})
+
+    solo = []
+    for item in resultado.get("solo_un_medio", []):
+        fuente = texto_por_medio.get(item.get("medio"))
+        if fuente and span_valido(item.get("span", ""), fuente):
+            solo.append(item)
+    return hechos_validos, solo
+
+
+def procesar_dia(story_id, articulos):
+    """Por cada ventana-día del clúster: (1) síntesis destrabada (cuerpos completos del día) y
+    (2) corroboración por día (spans verbatim de 2+ medios). Una fila completa por día en
+    resumenes_dia, idempotente por dia_key: salta los días ya guardados. Reemplaza a la
+    corroboración-por-clúster monolítica (resumenes), que sobre hilos largos daba timeout y
+    corroboraba mal (un representante por medio de semanas). Devuelve (guardados, saltados)."""
+    comparables = filtrar_comparables(articulos)
+    por_dia = defaultdict(list)
+    for a in comparables:
+        por_dia[_dia_bogota(a)].append(a)
+
+    guardados = saltados = 0
+    for dia in sorted(por_dia):
+        arts = _colapsar_por_url_dia(por_dia[dia])
+        if not arts:
+            continue
+        hashes = sorted(a["hash_sha256"] for a in arts)
+        clave = _dia_key(hashes)
+        if dia_ya_existe(clave):
+            saltados += 1
+            continue
+
+        # Pasada 1: síntesis (todos los cuerpos del día; modo "redactar").
+        r_sint = llamar_llm_json(SYS_SINTESIS_DIA, _prompt_sintesis_dia(arts))
+        sintesis = (r_sint or {}).get("sintesis")
+
+        # Pasada 2: corroboración (agrupada por medio; modo "copiar literal", gate verbatim).
+        # Separada de la síntesis a propósito: redactar y citar son modos opuestos, mezclarlos
+        # en un prompt reintroduce fabricación. Requiere 2+ medios para tener con qué corroborar.
+        por_medio = defaultdict(list)
+        for a in arts:
+            por_medio[a["medio_slug"]].append(a)
+        hechos_validos, solo_un_medio = [], []
+        if len(por_medio) >= 2:
+            hechos_validos, solo_un_medio = _corroborar_dia(por_medio)
+
+        guardar_resumen_dia({
+            "story_id": story_id,
+            "dia": dia.isoformat(),
+            "dia_key": clave,
+            "sintesis": sintesis,
+            "hechos_corroborados": hechos_validos,
+            "solo_un_medio": solo_un_medio,
+            "article_ids": [a["id"] for a in arts],
+            "member_hashes": hashes,
+            "medios": sorted(por_medio.keys()),
+            "modelo": MODELO,
+            "prompt_version": PROMPT_VERSION,
+        })
+        guardados += 1
+    return guardados, saltados
 
 
 # =======================================================================
@@ -563,6 +725,13 @@ def guardar_resumen(fila):
         sb.table("resumenes").insert(fila).execute()
     except Exception as e:
         print(f"[fase3] ERROR guardando resumen de story {fila['story_id']}: {e}")
+
+
+def guardar_resumen_dia(fila):
+    try:
+        sb.table("resumenes_dia").insert(fila).execute()
+    except Exception as e:
+        print(f"[fase3] ERROR guardando resumen_dia {fila['story_id']} {fila['dia']}: {e}")
 
 
 # =======================================================================
@@ -640,6 +809,18 @@ def main():
             guardar_resumen(resumen)
             guardados += 1
             print("resumen — guardado")
+
+    # Síntesis + corroboración por día (digest cronológico + hechos corroborados por ventana).
+    # Idempotente por dia_key: re-correr salta los días ya hechos. Reemplaza la síntesis única
+    # (retirada de analizar_cluster) y la corroboración-por-clúster de resumenes.
+    try:
+        g_dia, s_dia = procesar_dia(args.story_id, articulos)
+        print(f"resúmenes por día — {g_dia} guardados, {s_dia} skip (caché)")
+    except Exception as e:
+        fallidos += 1
+        print(f"  resúmenes por día — FALLO: {e}")
+        if isinstance(e, ErrorParseoJSON):
+            print(f"    crudo: {e.crudo[:300]!r}")
 
     print(f"\n{'='*40}\nGuardados: {guardados} | Skip: {saltados} | Fallidos: {fallidos}\n{'='*40}")
 
