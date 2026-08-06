@@ -304,8 +304,13 @@ export default async function Historia({ params }) {
   const secundarias = articulos.filter((a) => !a.es_ancla);
   const labels      = etiquetarAnclas(articulos);
   // colapsarCluster ya devuelve articulos ordenados por fecha_primera_captura
-  // asc (verificado arriba); el hilo se arma sobre ese mismo orden.
-  const hilo        = construirHilo(articulos);
+  // asc (su contrato, no se toca); tituloCanonico y etiquetarAnclas no dependen
+  // del orden (usan reduce/filter), así que se calculan sobre `articulos` tal
+  // cual. La línea de tiempo se pinta desc (reciente primero): el hilo se arma
+  // sobre una copia invertida, no sobre `articulos`. construirHilo solo compara
+  // días consecutivos, así que funciona igual de bien en desc.
+  const articulosDesc = [...articulos].reverse();
+  const hilo          = construirHilo(articulosDesc);
 
   // ── Q3: historias conectadas (story_relations, espejo dirigido) ──
   // El grafo es espejo: reescribir_stories inserta ambas direcciones, así que
@@ -379,7 +384,7 @@ export default async function Historia({ params }) {
         <h2 className="seccion-titulo">Línea de tiempo</h2>
         {/* Nota: el hilo arranca como lista CSS. SVG con curvas Bézier
             ("hilo que cuelga entre clavos") es el siguiente refinamiento visual. */}
-        {/* Editorial: las 3 visibles son las más antiguas (orden cronológico asc);
+        {/* Editorial: las 3 visibles son las más recientes (orden cronológico desc);
             cuándo destilar qué mostrar primero es decisión de producto futura. */}
         <ol className={`hilo-cronologico${articulos.length > 3 ? " hilo-preview-fade" : ""}`}>
           {hilo.slice(0, 3).map(({ articulo: a, separador }) => (
