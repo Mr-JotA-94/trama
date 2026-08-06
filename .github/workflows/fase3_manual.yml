@@ -1,0 +1,35 @@
+# .github/workflows/fase3_manual.yml
+# Disparo MANUAL de Fase 3 sobre un story_id. NO tiene cron a propósito:
+# es el carril de validación; el enganche al cron es otra unidad.
+name: fase3-manual
+
+on:
+  workflow_dispatch:
+    inputs:
+      story_id:
+        description: "story_id (uuid) del clúster a procesar"
+        required: true
+        type: string
+
+jobs:
+  fase3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar deps mínimas de Fase 3
+        run: pip install requests python-dotenv supabase
+
+      - name: Correr análisis Fase 3
+        working-directory: crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: python analisis_fase3.py "${{ inputs.story_id }}"
