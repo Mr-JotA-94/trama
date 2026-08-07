@@ -661,13 +661,15 @@ def procesar_dia(story_id, articulos):
     (2) corroboración por día (spans verbatim de 2+ medios). Una fila completa por día en
     resumenes_dia, idempotente por dia_key: salta los días ya guardados. Reemplaza a la
     corroboración-por-clúster monolítica (resumenes), que sobre hilos largos daba timeout y
-    corroboraba mal (un representante por medio de semanas). Devuelve (guardados, saltados)."""
+    corroboraba mal (un representante por medio de semanas). Devuelve (guardados, saltados,
+    fallidos): un día que agota los reintentos del LLM se registra como fallo y el bucle
+    sigue con el resto de los días."""
     comparables = filtrar_comparables(articulos)
     por_dia = defaultdict(list)
     for a in comparables:
         por_dia[_dia_bogota(a)].append(a)
 
-    guardados = saltados = 0
+    guardados = saltados = fallidos = 0
     for dia in sorted(por_dia):
         arts = _colapsar_por_url_dia(por_dia[dia])
         if not arts:
@@ -678,35 +680,43 @@ def procesar_dia(story_id, articulos):
             saltados += 1
             continue
 
-        # Pasada 1: síntesis (todos los cuerpos del día; modo "redactar").
-        r_sint = llamar_llm_json(SYS_SINTESIS_DIA, _prompt_sintesis_dia(arts))
-        sintesis = (r_sint or {}).get("sintesis")
+        pasada = "?"
+        try:
+            # Pasada 1: síntesis (todos los cuerpos del día; modo "redactar").
+            pasada = "sintesis"
+            r_sint = llamar_llm_json(SYS_SINTESIS_DIA, _prompt_sintesis_dia(arts))
+            sintesis = (r_sint or {}).get("sintesis")
 
-        # Pasada 2: corroboración (agrupada por medio; modo "copiar literal", gate verbatim).
-        # Separada de la síntesis a propósito: redactar y citar son modos opuestos, mezclarlos
-        # en un prompt reintroduce fabricación. Requiere 2+ medios para tener con qué corroborar.
-        por_medio = defaultdict(list)
-        for a in arts:
-            por_medio[a["medio_slug"]].append(a)
-        hechos_validos, solo_un_medio = [], []
-        if len(por_medio) >= 2:
-            hechos_validos, solo_un_medio = _corroborar_dia(por_medio)
+            # Pasada 2: corroboración (agrupada por medio; modo "copiar literal", gate verbatim).
+            # Separada de la síntesis a propósito: redactar y citar son modos opuestos, mezclarlos
+            # en un prompt reintroduce fabricación. Requiere 2+ medios para tener con qué corroborar.
+            pasada = "corroboracion"
+            por_medio = defaultdict(list)
+            for a in arts:
+                por_medio[a["medio_slug"]].append(a)
+            hechos_validos, solo_un_medio = [], []
+            if len(por_medio) >= 2:
+                hechos_validos, solo_un_medio = _corroborar_dia(por_medio)
 
-        guardar_resumen_dia({
-            "story_id": story_id,
-            "dia": dia.isoformat(),
-            "dia_key": clave,
-            "sintesis": sintesis,
-            "hechos_corroborados": hechos_validos,
-            "solo_un_medio": solo_un_medio,
-            "article_ids": [a["id"] for a in arts],
-            "member_hashes": hashes,
-            "medios": sorted(por_medio.keys()),
-            "modelo": MODELO,
-            "prompt_version": PROMPT_VERSION,
-        })
-        guardados += 1
-    return guardados, saltados
+            guardar_resumen_dia({
+                "story_id": story_id,
+                "dia": dia.isoformat(),
+                "dia_key": clave,
+                "sintesis": sintesis,
+                "hechos_corroborados": hechos_validos,
+                "solo_un_medio": solo_un_medio,
+                "article_ids": [a["id"] for a in arts],
+                "member_hashes": hashes,
+                "medios": sorted(por_medio.keys()),
+                "modelo": MODELO,
+                "prompt_version": PROMPT_VERSION,
+            })
+            guardados += 1
+        except Exception as e:
+            fallidos += 1
+            print(f"    día {dia.isoformat()} pasada={pasada} — FALLO: {e}")
+            continue
+    return guardados, saltados, fallidos
 
 
 # =======================================================================
@@ -814,8 +824,9 @@ def main():
     # Idempotente por dia_key: re-correr salta los días ya hechos. Reemplaza la síntesis única
     # (retirada de analizar_cluster) y la corroboración-por-clúster de resumenes.
     try:
-        g_dia, s_dia = procesar_dia(args.story_id, articulos)
-        print(f"resúmenes por día — {g_dia} guardados, {s_dia} skip (caché)")
+        g_dia, s_dia, f_dia = procesar_dia(args.story_id, articulos)
+        fallidos += f_dia
+        print(f"resúmenes por día — {g_dia} guardados, {s_dia} skip (caché), {f_dia} fallidos")
     except Exception as e:
         fallidos += 1
         print(f"  resúmenes por día — FALLO: {e}")
