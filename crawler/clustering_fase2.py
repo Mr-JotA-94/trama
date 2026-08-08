@@ -17,8 +17,10 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-import json  
+import json
 import numpy as np
+import networkx as nx
+from networkx.algorithms.community import louvain_communities
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -30,6 +32,15 @@ UMBRAL_IDF = 20.0       # peso mínimo de entidades compartidas (sustancia espec
 UMBRAL_COSENO = 0.70    # similitud mínima (mismo hecho, no solo mismo tema)
 VENTANA_HORAS = 72      # filtro grueso de candidatos
 SOLO_NOTICIAS = True    # solo 'noticia' forma clúster núcleo (§6). Opinión = reacción.
+
+# --- Split de beats (Louvain sobre componentes gigantes) ---
+# Validado 2026-08-08, diag Tier 0 sobre snapshot real (10997 arts, 620 clústeres):
+# 620 -> 652 clústeres, 0 sids rotos en clústeres sanos, los 3 sids padre sobreviven
+# en una subcomunidad, 0 artículos caídos por el filtro 2-medios. NO cambiar
+# resolución, seed ni umbral sin repetir el diag.
+UMBRAL_BEAT = 50
+LOUVAIN_RESOLUCION = 1.6
+LOUVAIN_SEED = 42
 
 # Namespace fijo para uuid5 de stories. NUNCA cambiar: define la identidad
 # de TODAS las historias. Si cambia, todos los enlaces /historia/[id] se
@@ -292,6 +303,7 @@ def construir_clusteres(articulos, idf):
     uf = UnionFind([a["id"] for a in articulos])
 
     aristas = 0
+    aristas_pares = []
     n = len(articulos)
     for i in range(n):
         a = articulos[i]
@@ -310,6 +322,7 @@ def construir_clusteres(articulos, idf):
                 continue
             uf.union(a["id"], b["id"])
             aristas += 1
+            aristas_pares.append((a["id"], b["id"]))
 
     print(f"Aristas que pasan las dos compuertas: {aristas}")
 
@@ -317,14 +330,47 @@ def construir_clusteres(articulos, idf):
     grupos = defaultdict(list)
     for a in articulos:
         grupos[uf.find(a["id"])].append(a["id"])
+
+    # Split de beats: componentes > UMBRAL_BEAT se particionan con Louvain sobre
+    # el MISMO grafo de compuertas (ver validación junto a las constantes). Cada
+    # entrada de grupos_finales es (ids, familia): familia = raíz del componente
+    # padre si el grupo salió de un split, None si el componente quedó intacto.
+    grupos_finales = []
+    n_particionados = 0
+    for raiz, ids in grupos.items():
+        if len(ids) <= UMBRAL_BEAT:
+            grupos_finales.append((ids, None))
+            continue
+        nodos_grupo = set(ids)
+        aristas_grupo = sorted(
+            (min(x, y), max(x, y))
+            for x, y in aristas_pares
+            if x in nodos_grupo and y in nodos_grupo
+        )
+        g = nx.Graph()
+        g.add_nodes_from(sorted(nodos_grupo))
+        g.add_edges_from(aristas_grupo)
+        comunidades = louvain_communities(
+            g, resolution=LOUVAIN_RESOLUCION, seed=LOUVAIN_SEED)
+        n_particionados += 1
+        print(f"  split: componente {raiz} ({len(ids)} arts) -> "
+              f"{len(comunidades)} comunidades")
+        for com in comunidades:
+            grupos_finales.append((sorted(com), raiz))
+
+    if n_particionados:
+        print(f"Componentes partidos por Louvain: {n_particionados}")
+
     # Solo clústeres de 2+ medios distintos (un clúster de un solo medio no es
     # "cobertura cruzada"; queda como clúster de tamaño 1, lo ignoramos por ahora).
     clusteres = []
-    for raiz, ids in grupos.items():
+    familia = []
+    for ids, fam in grupos_finales:
         medios = {por_id[i]["outlet_id"] for i in ids}
         if len(ids) >= 2 and len(medios) >= 2:
             clusteres.append(ids)
-    return clusteres, por_id
+            familia.append(fam)
+    return clusteres, por_id, familia
 
 # ---------------------------------------------------------------------
 # Los tres scores (contrato §6)
@@ -491,7 +537,7 @@ def main():
     print(f"Artículos con embedding: {len(articulos)}")
 
     idf, N = calcular_idf(articulos)
-    clusteres, por_id = construir_clusteres(articulos, idf)
+    clusteres, por_id, familia = construir_clusteres(articulos, idf)
 
     print(f"\n{'='*60}")
     print(f"Clústeres formados (2+ artículos, 2+ medios): {len(clusteres)}")
