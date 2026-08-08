@@ -205,7 +205,31 @@ function CardRelacionada({ historia: h }) {
   );
 }
 
-function IndiceTrama({ tramaOrdenada, storyId }) {
+function NodoTrama({ h, esActual }) {
+  return (
+    <li className={`trama-nodo${esActual ? " trama-nodo-actual" : ""}`}>
+      <span className="trama-fecha">{fechaCortaCO(h.fecha_inicio)}</span>
+      <div className="trama-titulo-fila">
+        {esActual ? (
+          <span className="trama-titulo">{h.titulo}</span>
+        ) : (
+          <Link href={`/historia/${h.id}`} className="trama-titulo">
+            {h.titulo}
+          </Link>
+        )}
+        {esActual && <span className="trama-tag-actual">Estás aquí</span>}
+      </div>
+      <span className="trama-medios">
+        {h.n_medios} {h.n_medios === 1 ? "medio" : "medios"}
+      </span>
+    </li>
+  );
+}
+
+function IndiceTrama({ tramaOrdenada, tramaColapsada, storyId }) {
+  // El colapso solo aplica si hay algo que ocultar (>3 sub-hechos); si no,
+  // tramaColapsada === tramaOrdenada y se pinta un único <ol> sin controles.
+  const colapsable = tramaOrdenada.length > tramaColapsada.length;
   return (
     <section className="historia-seccion trama-seccion">
       <h2 className="seccion-titulo">De la misma trama</h2>
@@ -213,30 +237,21 @@ function IndiceTrama({ tramaOrdenada, storyId }) {
         Esta historia es un capítulo de una trama mayor, separada en{" "}
         {tramaOrdenada.length} sub-hechos.
       </p>
-      <ol className="trama-indice">
-        {tramaOrdenada.map((h) => {
-          const esActual = h.id === storyId;
-          return (
-            <li
-              key={h.id}
-              className={`trama-nodo${esActual ? " trama-nodo-actual" : ""}`}
-            >
-              <span className="trama-fecha">{fechaCortaCO(h.fecha_inicio)}</span>
-              {esActual ? (
-                <span className="trama-titulo">{h.titulo}</span>
-              ) : (
-                <Link href={`/historia/${h.id}`} className="trama-titulo">
-                  {h.titulo}
-                </Link>
-              )}
-              <span className="trama-medios">
-                {h.n_medios} {h.n_medios === 1 ? "medio" : "medios"}
-              </span>
-              {esActual && <span className="trama-tag-actual">Estás aquí</span>}
-            </li>
-          );
-        })}
+      <ol className={`trama-indice${colapsable ? " trama-preview" : ""}`}>
+        {tramaColapsada.map((h) => (
+          <NodoTrama key={h.id} h={h} esActual={h.id === storyId} />
+        ))}
       </ol>
+      {colapsable && (
+        <details className="trama-mas">
+          <summary>Ver los {tramaOrdenada.length} sub-hechos completos</summary>
+          <ol className="trama-indice">
+            {tramaOrdenada.map((h) => (
+              <NodoTrama key={h.id} h={h} esActual={h.id === storyId} />
+            ))}
+          </ol>
+        </details>
+      )}
     </section>
   );
 }
@@ -401,19 +416,24 @@ export default async function Historia({ params }) {
     .eq("tipo", "misma_trama");
 
   let tramaOrdenada = [];
+  let tramaColapsada = [];
   if (tramaRows?.length) {
     const hermanaIds = tramaRows.map((r) => r.destino_id);
     const { data: hermanas } = await supabase
       .from("stories")
-      .select("id, titulo, fecha_inicio, n_medios")
+      .select("id, titulo, fecha_inicio, n_medios, n_articulos")
       .in("id", hermanaIds);
 
     // La actual usa tituloH (título canónico ya calculado); las hermanas usan
     // stories.titulo crudo, igual que CardRelacionada.
-    const conjunto = [
-      { id: story.id, titulo: tituloH, fecha_inicio: story.fecha_inicio, n_medios: story.n_medios },
-      ...(hermanas ?? []),
-    ];
+    const actual = {
+      id: story.id,
+      titulo: tituloH,
+      fecha_inicio: story.fecha_inicio,
+      n_medios: story.n_medios,
+      n_articulos: story.n_articulos,
+    };
+    const conjunto = [actual, ...(hermanas ?? [])];
 
     if (conjunto.length >= 2) {
       // Orden del arco: día-calendario Bogotá ASC (viejo→nuevo). Desempate
@@ -426,6 +446,25 @@ export default async function Historia({ params }) {
         if (b.n_medios !== a.n_medios) return b.n_medios - a.n_medios;
         return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
       });
+
+      if (tramaOrdenada.length > 3) {
+        // Top-3 por cobertura (n_medios, desempate n_articulos, desempate id).
+        const porCobertura = [...tramaOrdenada].sort((a, b) => {
+          if (b.n_medios !== a.n_medios) return b.n_medios - a.n_medios;
+          if (b.n_articulos !== a.n_articulos) return b.n_articulos - a.n_articulos;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+        const top3 = porCobertura.slice(0, 3);
+        // Garantiza "Estás aquí" visible en el colapso: si el nodo actual no
+        // quedó entre los 3, reemplaza al de menor cobertura de esos 3.
+        if (!top3.some((h) => h.id === actual.id)) top3[2] = actual;
+        const idsColapsados = new Set(top3.map((h) => h.id));
+        // Filtra sobre tramaOrdenada (ya cronológico) para que el trío quede
+        // en su propio orden temporal relativo, no en orden de ranking.
+        tramaColapsada = tramaOrdenada.filter((h) => idsColapsados.has(h.id));
+      } else {
+        tramaColapsada = tramaOrdenada;
+      }
     }
   }
 
@@ -454,7 +493,11 @@ export default async function Historia({ params }) {
 
       {/* ── DE LA MISMA TRAMA (hermanas del beat-split) ── */}
       {tramaOrdenada.length >= 2 && (
-        <IndiceTrama tramaOrdenada={tramaOrdenada} storyId={story.id} />
+        <IndiceTrama
+          tramaOrdenada={tramaOrdenada}
+          tramaColapsada={tramaColapsada}
+          storyId={story.id}
+        />
       )}
 
       {/* ── RESUMEN — PLACEHOLDER ── */}
