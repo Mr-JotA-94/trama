@@ -46,6 +46,13 @@ function diffDiasCO(desde, hasta) {
   return Math.round((d2 - d1) / 86400000);
 }
 
+// Fecha corta para el índice de trama, ej. "16 jul".
+function fechaCortaCO(ts) {
+  return new Date(ts).toLocaleDateString("es-CO", {
+    timeZone: "America/Bogota", day: "numeric", month: "short",
+  });
+}
+
 // Etiqueta del separador de día del hilo, ej. "Jueves 18 de julio".
 function separadorDiaCO(ts) {
   const texto = new Date(ts)
@@ -198,6 +205,57 @@ function CardRelacionada({ historia: h }) {
   );
 }
 
+function NodoTrama({ h, esActual }) {
+  return (
+    <li className={`trama-nodo${esActual ? " trama-nodo-actual" : ""}`}>
+      <span className="trama-fecha">{fechaCortaCO(h.fecha_inicio)}</span>
+      <div className="trama-titulo-fila">
+        {esActual ? (
+          <span className="trama-titulo">{h.titulo}</span>
+        ) : (
+          <Link href={`/historia/${h.id}`} className="trama-titulo">
+            {h.titulo}
+          </Link>
+        )}
+        {esActual && <span className="trama-tag-actual">Estás aquí</span>}
+      </div>
+      <span className="trama-medios">
+        {h.n_medios} {h.n_medios === 1 ? "medio" : "medios"}
+      </span>
+    </li>
+  );
+}
+
+function IndiceTrama({ tramaOrdenada, tramaColapsada, storyId }) {
+  // El colapso solo aplica si hay algo que ocultar (>3 sub-hechos); si no,
+  // tramaColapsada === tramaOrdenada y se pinta un único <ol> sin controles.
+  const colapsable = tramaOrdenada.length > tramaColapsada.length;
+  return (
+    <section className="historia-seccion trama-seccion">
+      <h2 className="seccion-titulo">De la misma trama</h2>
+      <p className="trama-intro">
+        Esta historia es un capítulo de una trama mayor, separada en{" "}
+        {tramaOrdenada.length} sub-hechos.
+      </p>
+      <ol className={`trama-indice${colapsable ? " trama-preview" : ""}`}>
+        {tramaColapsada.map((h) => (
+          <NodoTrama key={h.id} h={h} esActual={h.id === storyId} />
+        ))}
+      </ol>
+      {colapsable && (
+        <details className="trama-mas">
+          <summary>Ver los {tramaOrdenada.length} sub-hechos completos</summary>
+          <ol className="trama-indice">
+            {tramaOrdenada.map((h) => (
+              <NodoTrama key={h.id} h={h} esActual={h.id === storyId} />
+            ))}
+          </ol>
+        </details>
+      )}
+    </section>
+  );
+}
+
 // ── Página ────────────────────────────────────────────────────────────────────
 
 export default async function Historia({ params }) {
@@ -323,6 +381,7 @@ export default async function Historia({ params }) {
     .from("story_relations")
     .select("destino_id, n_especificas, coseno")
     .eq("origen_id", story.id)
+    .eq("tipo", "tematica")
     .order("n_especificas", { ascending: false })
     .order("coseno", { ascending: false })
     .limit(50);
@@ -346,6 +405,90 @@ export default async function Historia({ params }) {
   const relPrincipales = relaciones.slice(0, 5);
   const relResto       = relaciones.slice(5);
 
+  // ── Q4: hermanas del beat-split (story_relations tipo='misma_trama') ──
+  // Las hermanas forman un clique (mismo componente Louvain padre): un solo
+  // query por origen_id las trae todas, sin depender de compuertas ni de NER
+  // (BITACORA 2026-08-08 — "la hermandad es verdad mecánica, no umbral").
+  const { data: tramaRows } = await supabase
+    .from("story_relations")
+    .select("destino_id")
+    .eq("origen_id", story.id)
+    .eq("tipo", "misma_trama");
+
+  let tramaOrdenada = [];
+  let tramaColapsada = [];
+  if (tramaRows?.length) {
+    const hermanaIds = tramaRows.map((r) => r.destino_id);
+    const { data: hermanas } = await supabase
+      .from("stories")
+      .select(`
+        id, titulo, fecha_inicio, n_medios, n_articulos,
+        story_articles ( score_neutralidad, articles ( titulo, tipo ) )
+      `)
+      .in("id", hermanaIds);
+
+    // Mismo criterio de título que tituloH (canónico: el titular-noticia más
+    // neutral que no sea cita) para que el título no cambie al hacer clic
+    // desde el índice hacia la página destino de la hermana.
+    const hermanasConTitulo = (hermanas ?? []).map((s) => {
+      const arts = (s.story_articles ?? [])
+        .map((sa) => ({
+          tipo:              sa.articles?.tipo,
+          titulo:            sa.articles?.titulo,
+          score_neutralidad: sa.score_neutralidad,
+        }))
+        .filter((a) => a.titulo);
+      return {
+        id:            s.id,
+        fecha_inicio:  s.fecha_inicio,
+        n_medios:      s.n_medios,
+        n_articulos:   s.n_articulos,
+        titulo:        tituloCanonico(arts, s.titulo),
+      };
+    });
+
+    const actual = {
+      id: story.id,
+      titulo: tituloH,
+      fecha_inicio: story.fecha_inicio,
+      n_medios: story.n_medios,
+      n_articulos: story.n_articulos,
+    };
+    const conjunto = [actual, ...hermanasConTitulo];
+
+    if (conjunto.length >= 2) {
+      // Orden del arco: día-calendario Bogotá ASC (viejo→nuevo). Desempate
+      // por n_medios DESC, luego id ASC. NUNCA por el timestamp crudo dentro
+      // del día — eso ordena por qué medio publicó primero, no por el arco.
+      tramaOrdenada = [...conjunto].sort((a, b) => {
+        const diaA = claveDiaCO(a.fecha_inicio);
+        const diaB = claveDiaCO(b.fecha_inicio);
+        if (diaA !== diaB) return diaA < diaB ? -1 : 1;
+        if (b.n_medios !== a.n_medios) return b.n_medios - a.n_medios;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+
+      if (tramaOrdenada.length > 3) {
+        // Top-3 por cobertura (n_medios, desempate n_articulos, desempate id).
+        const porCobertura = [...tramaOrdenada].sort((a, b) => {
+          if (b.n_medios !== a.n_medios) return b.n_medios - a.n_medios;
+          if (b.n_articulos !== a.n_articulos) return b.n_articulos - a.n_articulos;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+        const top3 = porCobertura.slice(0, 3);
+        // Garantiza "Estás aquí" visible en el colapso: si el nodo actual no
+        // quedó entre los 3, reemplaza al de menor cobertura de esos 3.
+        if (!top3.some((h) => h.id === actual.id)) top3[2] = actual;
+        const idsColapsados = new Set(top3.map((h) => h.id));
+        // Filtra sobre tramaOrdenada (ya cronológico) para que el trío quede
+        // en su propio orden temporal relativo, no en orden de ranking.
+        tramaColapsada = tramaOrdenada.filter((h) => idsColapsados.has(h.id));
+      } else {
+        tramaColapsada = tramaOrdenada;
+      }
+    }
+  }
+
   return (
     <>
       {/* Breadcrumb */}
@@ -368,6 +511,15 @@ export default async function Historia({ params }) {
           </span>
         </div>
       </div>
+
+      {/* ── DE LA MISMA TRAMA (hermanas del beat-split) ── */}
+      {tramaOrdenada.length >= 2 && (
+        <IndiceTrama
+          tramaOrdenada={tramaOrdenada}
+          tramaColapsada={tramaColapsada}
+          storyId={story.id}
+        />
+      )}
 
       {/* ── RESUMEN — PLACEHOLDER ── */}
       <div className="placeholder-fase">

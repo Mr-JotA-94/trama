@@ -503,6 +503,123 @@ a { color: inherit; }
 .hilo-separador-dia:first-child { padding-top: 0; }
 .hilo-separador-dia:first-child::before { top: 7px; }
 
+/* ---- Índice de trama (hermanas del beat-split, story_relations
+   tipo='misma_trama') --------------------------------------------------
+   Firma visual: el hilo rojo un nivel arriba del hilo cronológico de
+   artículos (espina más gruesa, punto en vez de círculo hueco de tinta).
+   Colapso por cobertura: ver .trama-mas más abajo. */
+.trama-intro {
+  font-size: 0.92rem;
+  color: var(--gris-archivo);
+  line-height: 1.5;
+  margin-bottom: 16px;
+  max-width: 640px;
+}
+
+.trama-indice {
+  list-style: none;
+  padding-left: 28px;
+  border-left: 3px solid var(--hilo);
+  margin: 0;
+}
+
+/* Layout vertical fijo: fecha arriba, título, medios abajo. Antes era un
+   flex-row con wrap, que reordenaba fecha/título/medios de forma distinta
+   según el largo del título — inconsistente entre nodos. */
+.trama-nodo {
+  position: relative;
+  padding: 10px 0 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* Separador entre sub-hechos consecutivos, mismo patrón que .captura +
+   .captura y .historia-item + .historia-item en el resto del sitio. */
+.trama-nodo + .trama-nodo {
+  border-top: 1px dotted var(--gris-archivo);
+  padding-top: 14px;
+  margin-top: 4px;
+}
+/* Punto del arco: hueco (papel + borde hilo) para las hermanas-enlace,
+   relleno de hilo para "Estás aquí". Excepción a esquinas rectas ya
+   establecida en .hilo-nodo::before — el punto representa un hito, no papel. */
+.trama-nodo::before {
+  content: "";
+  position: absolute;
+  left: -35px;
+  top: 14px;
+  width: 12px;
+  height: 12px;
+  background: var(--papel);
+  border: 2px solid var(--hilo);
+  border-radius: 50%;
+}
+.trama-nodo-actual::before {
+  background: var(--hilo);
+}
+
+.trama-fecha {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.76rem;
+  color: var(--gris-archivo);
+}
+
+.trama-titulo-fila {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.trama-titulo {
+  font-size: 0.98rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-decoration: none;
+}
+a.trama-titulo:hover { text-decoration: underline; text-decoration-color: var(--hilo); }
+
+.trama-medios {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  color: var(--gris-archivo);
+}
+
+.trama-tag-actual {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  background: var(--hilo);
+  color: var(--papel);
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+/* ── Colapso por cobertura ──
+   El top-3 no es un prefijo del arco completo (está disperso), así que el
+   expandido es una segunda lista independiente con el arco verdadero, y se
+   oculta la preview mientras esa lista está abierta (mismo truco :has() que
+   .historia-seccion:has(.timeline-mas[open]) usa para el hilo de artículos,
+   aplicado aquí a .trama-mas — selectores en scopes de sección distintos,
+   no interfieren entre sí). */
+.trama-mas {
+  margin-top: 8px;
+}
+.trama-mas > summary {
+  cursor: pointer;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.8rem;
+  color: var(--hilo);
+  padding: 8px 0;
+  list-style: none;
+}
+.trama-mas > summary::-webkit-details-marker { display: none; }
+.trama-mas[open] > summary { display: none; }
+
+.trama-seccion:has(.trama-mas[open]) .trama-preview {
+  display: none;
+}
+
 /* ---- Bento editorial ----------------------------------------------- */
 .bento-anclas {
   display: flex;
