@@ -196,6 +196,22 @@ agrupación temporal + tope de tamaño de clúster antes del backfill y del cron
 
 Pendiente de §5: reescritura integral (carril per-artículo cerrado, veredictos, aritmética
 del FP como sección).
+
+Resumen de Fase 3: de por-clúster a por-día. La unidad del resumen pasó del clúster
+completo a la ventana-día. procesar_dia genera, por cada día de un clúster: (1) una
+síntesis breve destrabada (ve los cuerpos completos del día) y (2) una corroboración
+con gate verbatim. Ambas viven en resumenes_dia, que es ahora el objeto completo de la
+jornada: síntesis + hechos corroborados + solo-un-medio, con atribución de medios y fecha.
+
+Razones de diseño: (a) trocear por día elimina la deriva causal por construcción — una
+foto de un día no encadena eventos separados en el tiempo; (b) el payload por día es chico,
+lo que evita el structural collapse y el timeout de la corroboración monolítica; (c) el gate
+verbatim se preserva, ahora fusionado por medio (todas las notas de un medio ese día se
+unen en un bloque; un span vale si aparece en cualquiera de ellas), lo que recupera los
+sub-hechos que un colapso 1-por-medio perdía. La síntesis única y la corroboración por
+clúster quedan retiradas/a-retirar. El gate mecánico valida procedencia; la robustez del
+modelo (con contexto completo) es lo que evita la fabricación, no la restricción del input.
+
 ---
 
 ## 6. Clustering (Fase 2 — el corazón intelectual)

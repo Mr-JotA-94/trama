@@ -39,6 +39,7 @@ ASIMETRÍA INTENCIONAL (dejar por escrito): comparación colapsa 1-por-medio POR
 
 VALIDACIÓN REAL: story 54b1342f (posesión de Abelardo de la Espriella, 253 arts). 115 pares por ventana vs 31.878 exhaustivo. Resultado: 103 guardados, 12 skip (caché), 1 fallido. ~53 min. Latencia ~31s/par, coincide con la estimación de diseño (33s). Unidad cerrada: el módulo corre a la latencia diseñada y el mega-clúster termina end-to-end.
 
+
 ### [2026-07-29] Esquema Fase 3: drop analyses vieja + create comparaciones/resumenes
 - `analyses` (carril per-artículo, columnas tecnicas/omisiones/resumen_neutral, article_id
   único) confirmada VACÍA (count=0) -> DROP limpio, sin backup.
@@ -381,6 +382,27 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 ---
 
 ## Deuda técnica conocida
+
+2026-08-01 — Truncamiento de JSON en corroboración (síntoma / causa / decisión).
+Síntoma: Expecting ',' delimiter con crudo lleno, cortado a media palabra. Hipótesis
+descartadas con el crudo en mano: NO era encoding (resp.json() decodifica UTF-8 solo; los
+acentos rotos son de la terminal cmd), NI comillas sin escapar (el crudo mostró \" bien
+escapado). Causa real: max_tokens=6000 insuficiente para outputs de corroboración con spans
+largos (clúster JEP: 5 hechos × 3 spans de oración entera + solo_un_medio). Decisión: subir a
+16000. Lección: ver el crudo ANTES de fijar el fix.
+
+2026-08-01 — Entorno local Windows ARM64 + Python 3.14 (deuda, NO se arregla para igualar
+Actions). Respuestas vacías (crudo: '') y timeouts de tres cifras en llamadas largas =
+bug de sockets SSL de 3.14 + carga; el max_tokens NO los explica (son ruido de red). Además
+faltan wheels ARM64 (torch/cryptography compilan desde fuente, sin linker → no instalan).
+Decisión: es OTRA plataforma que Actions (Linux x86), no un entorno "roto". Validar carriles
+de respuesta larga (corroboración) en Actions, no en local. Reactivación: si algún día se
+quiere correr diags pesados en local, ver Ideas (requirements mínimo, encoding, PATH).
+
+2026-08-01 — Código muerto tras retirar la síntesis única. SYS_SINTESIS,
+_prompt_usuario_sintesis y _verificar_sintesis_parcial quedan sin uso al poner
+sintesis=None en analizar_cluster. Se dejaron para acotar el diff; limpieza en commit
+posterior.
 
 [2026-07-30, BLOQUEANTE BACKFILL] Backfill completo ~8.4h > límite 6h de GitHub Actions
 
