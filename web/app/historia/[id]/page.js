@@ -46,6 +46,13 @@ function diffDiasCO(desde, hasta) {
   return Math.round((d2 - d1) / 86400000);
 }
 
+// Fecha corta para el índice de trama, ej. "16 jul".
+function fechaCortaCO(ts) {
+  return new Date(ts).toLocaleDateString("es-CO", {
+    timeZone: "America/Bogota", day: "numeric", month: "short",
+  });
+}
+
 // Etiqueta del separador de día del hilo, ej. "Jueves 18 de julio".
 function separadorDiaCO(ts) {
   const texto = new Date(ts)
@@ -198,6 +205,42 @@ function CardRelacionada({ historia: h }) {
   );
 }
 
+function IndiceTrama({ tramaOrdenada, storyId }) {
+  return (
+    <section className="historia-seccion trama-seccion">
+      <h2 className="seccion-titulo">De la misma trama</h2>
+      <p className="trama-intro">
+        Esta historia es un capítulo de una trama mayor, separada en{" "}
+        {tramaOrdenada.length} sub-hechos.
+      </p>
+      <ol className="trama-indice">
+        {tramaOrdenada.map((h) => {
+          const esActual = h.id === storyId;
+          return (
+            <li
+              key={h.id}
+              className={`trama-nodo${esActual ? " trama-nodo-actual" : ""}`}
+            >
+              <span className="trama-fecha">{fechaCortaCO(h.fecha_inicio)}</span>
+              {esActual ? (
+                <span className="trama-titulo">{h.titulo}</span>
+              ) : (
+                <Link href={`/historia/${h.id}`} className="trama-titulo">
+                  {h.titulo}
+                </Link>
+              )}
+              <span className="trama-medios">
+                {h.n_medios} {h.n_medios === 1 ? "medio" : "medios"}
+              </span>
+              {esActual && <span className="trama-tag-actual">Estás aquí</span>}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
 // ── Página ────────────────────────────────────────────────────────────────────
 
 export default async function Historia({ params }) {
@@ -323,6 +366,7 @@ export default async function Historia({ params }) {
     .from("story_relations")
     .select("destino_id, n_especificas, coseno")
     .eq("origen_id", story.id)
+    .eq("tipo", "tematica")
     .order("n_especificas", { ascending: false })
     .order("coseno", { ascending: false })
     .limit(50);
@@ -346,6 +390,45 @@ export default async function Historia({ params }) {
   const relPrincipales = relaciones.slice(0, 5);
   const relResto       = relaciones.slice(5);
 
+  // ── Q4: hermanas del beat-split (story_relations tipo='misma_trama') ──
+  // Las hermanas forman un clique (mismo componente Louvain padre): un solo
+  // query por origen_id las trae todas, sin depender de compuertas ni de NER
+  // (BITACORA 2026-08-08 — "la hermandad es verdad mecánica, no umbral").
+  const { data: tramaRows } = await supabase
+    .from("story_relations")
+    .select("destino_id")
+    .eq("origen_id", story.id)
+    .eq("tipo", "misma_trama");
+
+  let tramaOrdenada = [];
+  if (tramaRows?.length) {
+    const hermanaIds = tramaRows.map((r) => r.destino_id);
+    const { data: hermanas } = await supabase
+      .from("stories")
+      .select("id, titulo, fecha_inicio, n_medios")
+      .in("id", hermanaIds);
+
+    // La actual usa tituloH (título canónico ya calculado); las hermanas usan
+    // stories.titulo crudo, igual que CardRelacionada.
+    const conjunto = [
+      { id: story.id, titulo: tituloH, fecha_inicio: story.fecha_inicio, n_medios: story.n_medios },
+      ...(hermanas ?? []),
+    ];
+
+    if (conjunto.length >= 2) {
+      // Orden del arco: día-calendario Bogotá ASC (viejo→nuevo). Desempate
+      // por n_medios DESC, luego id ASC. NUNCA por el timestamp crudo dentro
+      // del día — eso ordena por qué medio publicó primero, no por el arco.
+      tramaOrdenada = [...conjunto].sort((a, b) => {
+        const diaA = claveDiaCO(a.fecha_inicio);
+        const diaB = claveDiaCO(b.fecha_inicio);
+        if (diaA !== diaB) return diaA < diaB ? -1 : 1;
+        if (b.n_medios !== a.n_medios) return b.n_medios - a.n_medios;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+    }
+  }
+
   return (
     <>
       {/* Breadcrumb */}
@@ -368,6 +451,11 @@ export default async function Historia({ params }) {
           </span>
         </div>
       </div>
+
+      {/* ── DE LA MISMA TRAMA (hermanas del beat-split) ── */}
+      {tramaOrdenada.length >= 2 && (
+        <IndiceTrama tramaOrdenada={tramaOrdenada} storyId={story.id} />
+      )}
 
       {/* ── RESUMEN — PLACEHOLDER ── */}
       <div className="placeholder-fase">

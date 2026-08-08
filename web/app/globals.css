@@ -503,6 +503,88 @@ a { color: inherit; }
 .hilo-separador-dia:first-child { padding-top: 0; }
 .hilo-separador-dia:first-child::before { top: 7px; }
 
+/* ---- Índice de trama (hermanas del beat-split, story_relations
+   tipo='misma_trama') --------------------------------------------------
+   Firma visual: el hilo rojo un nivel arriba del hilo cronológico de
+   artículos (espina más gruesa, punto en vez de círculo hueco de tinta).
+   Sin colapsar: se ve el arco completo de un vistazo. */
+.trama-intro {
+  font-size: 0.92rem;
+  color: var(--gris-archivo);
+  line-height: 1.5;
+  margin-bottom: 16px;
+  max-width: 640px;
+}
+
+.trama-indice {
+  list-style: none;
+  padding-left: 28px;
+  border-left: 3px solid var(--hilo);
+  margin: 0;
+}
+
+.trama-nodo {
+  position: relative;
+  padding: 10px 0 10px 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+/* Punto del arco: hueco (papel + borde hilo) para las hermanas-enlace,
+   relleno de hilo para "Estás aquí". Excepción a esquinas rectas ya
+   establecida en .hilo-nodo::before — el punto representa un hito, no papel. */
+.trama-nodo::before {
+  content: "";
+  position: absolute;
+  left: -35px;
+  top: 16px;
+  width: 12px;
+  height: 12px;
+  background: var(--papel);
+  border: 2px solid var(--hilo);
+  border-radius: 50%;
+}
+.trama-nodo-actual::before {
+  background: var(--hilo);
+}
+
+.trama-fecha {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.76rem;
+  color: var(--gris-archivo);
+  white-space: nowrap;
+}
+
+.trama-titulo {
+  font-size: 0.98rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-decoration: none;
+}
+a.trama-titulo:hover { text-decoration: underline; text-decoration-color: var(--hilo); }
+
+.trama-medios {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  color: var(--gris-archivo);
+}
+
+.trama-tag-actual {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  background: var(--hilo);
+  color: var(--papel);
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .trama-nodo { flex-direction: column; gap: 4px; }
+}
+
 /* ---- Bento editorial ----------------------------------------------- */
 .bento-anclas {
   display: flex;
