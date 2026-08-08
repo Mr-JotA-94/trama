@@ -86,8 +86,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Instalar dependencias (ligeras — clustering NO usa torch/spaCy, solo lee embeddings y hace coseno en numpy)
-        run: pip install numpy supabase python-dotenv
+      - name: Instalar dependencias (ligeras — clustering NO usa torch/spaCy, solo lee embeddings y hace coseno en numpy; networkx es puro Python, para el split de beats por Louvain)
+        run: pip install numpy supabase python-dotenv networkx
       - name: Reclusterizar (recompute total — stories es caché derivada pura, se borra y reconstruye)
         working-directory: crawler
         env:

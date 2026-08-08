@@ -17,8 +17,10 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 
-import json  
+import json
 import numpy as np
+import networkx as nx
+from networkx.algorithms.community import louvain_communities
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -30,6 +32,15 @@ UMBRAL_IDF = 20.0       # peso mínimo de entidades compartidas (sustancia espec
 UMBRAL_COSENO = 0.70    # similitud mínima (mismo hecho, no solo mismo tema)
 VENTANA_HORAS = 72      # filtro grueso de candidatos
 SOLO_NOTICIAS = True    # solo 'noticia' forma clúster núcleo (§6). Opinión = reacción.
+
+# --- Split de beats (Louvain sobre componentes gigantes) ---
+# Validado 2026-08-08, diag Tier 0 sobre snapshot real (10997 arts, 620 clústeres):
+# 620 -> 652 clústeres, 0 sids rotos en clústeres sanos, los 3 sids padre sobreviven
+# en una subcomunidad, 0 artículos caídos por el filtro 2-medios. NO cambiar
+# resolución, seed ni umbral sin repetir el diag.
+UMBRAL_BEAT = 50
+LOUVAIN_RESOLUCION = 1.6
+LOUVAIN_SEED = 42
 
 # Namespace fijo para uuid5 de stories. NUNCA cambiar: define la identidad
 # de TODAS las historias. Si cambia, todos los enlaces /historia/[id] se
@@ -292,6 +303,7 @@ def construir_clusteres(articulos, idf):
     uf = UnionFind([a["id"] for a in articulos])
 
     aristas = 0
+    aristas_pares = []
     n = len(articulos)
     for i in range(n):
         a = articulos[i]
@@ -310,6 +322,7 @@ def construir_clusteres(articulos, idf):
                 continue
             uf.union(a["id"], b["id"])
             aristas += 1
+            aristas_pares.append((a["id"], b["id"]))
 
     print(f"Aristas que pasan las dos compuertas: {aristas}")
 
@@ -317,14 +330,47 @@ def construir_clusteres(articulos, idf):
     grupos = defaultdict(list)
     for a in articulos:
         grupos[uf.find(a["id"])].append(a["id"])
+
+    # Split de beats: componentes > UMBRAL_BEAT se particionan con Louvain sobre
+    # el MISMO grafo de compuertas (ver validación junto a las constantes). Cada
+    # entrada de grupos_finales es (ids, familia): familia = raíz del componente
+    # padre si el grupo salió de un split, None si el componente quedó intacto.
+    grupos_finales = []
+    n_particionados = 0
+    for raiz, ids in grupos.items():
+        if len(ids) <= UMBRAL_BEAT:
+            grupos_finales.append((ids, None))
+            continue
+        nodos_grupo = set(ids)
+        aristas_grupo = sorted(
+            (min(x, y), max(x, y))
+            for x, y in aristas_pares
+            if x in nodos_grupo and y in nodos_grupo
+        )
+        g = nx.Graph()
+        g.add_nodes_from(sorted(nodos_grupo))
+        g.add_edges_from(aristas_grupo)
+        comunidades = louvain_communities(
+            g, resolution=LOUVAIN_RESOLUCION, seed=LOUVAIN_SEED)
+        n_particionados += 1
+        print(f"  split: componente {raiz} ({len(ids)} arts) -> "
+              f"{len(comunidades)} comunidades")
+        for com in comunidades:
+            grupos_finales.append((sorted(com), raiz))
+
+    if n_particionados:
+        print(f"Componentes partidos por Louvain: {n_particionados}")
+
     # Solo clústeres de 2+ medios distintos (un clúster de un solo medio no es
     # "cobertura cruzada"; queda como clúster de tamaño 1, lo ignoramos por ahora).
     clusteres = []
-    for raiz, ids in grupos.items():
+    familia = []
+    for ids, fam in grupos_finales:
         medios = {por_id[i]["outlet_id"] for i in ids}
         if len(ids) >= 2 and len(medios) >= 2:
             clusteres.append(ids)
-    return clusteres, por_id
+            familia.append(fam)
+    return clusteres, por_id, familia
 
 # ---------------------------------------------------------------------
 # Los tres scores (contrato §6)
@@ -384,7 +430,7 @@ def calcular_scores(ids, por_id, idf):
 # ---------------------------------------------------------------------
 # Escritura (upsert de stories + reconstrucción de derivados)
 # ---------------------------------------------------------------------
-def reescribir_stories(clusteres, por_id, idf):
+def reescribir_stories(clusteres, por_id, idf, familia):
     # sid por clúster, calculado UNA vez (uuid_estable es determinista: mismo
     # clúster -> mismo id). Se necesita antes de tocar la BD para saber qué
     # stories existentes ya no corresponden a ningún clúster de esta corrida.
@@ -439,7 +485,7 @@ def reescribir_stories(clusteres, por_id, idf):
 
     # PASADA 1: stories (upsert) + story_articles; stashear (sid, centroide, específicas).
     nodos = []
-    for sid, ids, u in zip(sids, clusteres, ents_union):
+    for sid, ids, u, fam in zip(sids, clusteres, ents_union, familia):
         scores, anclas, ancla_principal = calcular_scores(ids, por_id, idf)
         fechas = [cuando(por_id[i]) for i in ids]
 
@@ -461,25 +507,34 @@ def reescribir_stories(clusteres, por_id, idf):
         } for i in ids]).execute()
 
         esp = {canon(e) for e in u if es_especifica(canon(e))}
-        nodos.append((sid, centroide_de_cluster(ids, por_id), esp))
+        nodos.append((sid, centroide_de_cluster(ids, por_id), esp, fam))
 
-    # PASADA 2: aristas espejo (story_relations). Motor n_especificas, guardia coseno.
+    # PASADA 2: aristas espejo (story_relations).
+    # Hermanas (misma familia, o sea: subhistorias nacidas del mismo componente
+    # partido por Louvain) emiten SIEMPRE tipo='misma_trama', con n_especificas
+    # y coseno calculados de verdad aunque no pasen las compuertas — es verdad
+    # mecánica del split, no una inferencia por umbral. El resto sigue el motor
+    # n_especificas + guardia coseno de siempre, con tipo='tematica'.
     rel_filas = []
     for x in range(len(nodos)):
-        sid_a, cen_a, esp_a = nodos[x]
+        sid_a, cen_a, esp_a, fam_a = nodos[x]
         for y in range(x + 1, len(nodos)):
-            sid_b, cen_b, esp_b = nodos[y]
+            sid_b, cen_b, esp_b, fam_b = nodos[y]
+            hermanas = fam_a is not None and fam_a == fam_b
             comp = esp_a & esp_b
-            if len(comp) < UMBRAL_N_ESPECIFICAS:
+            if not hermanas and len(comp) < UMBRAL_N_ESPECIFICAS:
                 continue
             cos = coseno(cen_a, cen_b)
-            if cos < GUARDIA_COSENO_REL:
+            if not hermanas and cos < GUARDIA_COSENO_REL:
                 continue
+            tipo = "misma_trama" if hermanas else "tematica"
             ev, n, c = sorted(comp), len(comp), round(cos, 4)
             rel_filas.append({"origen_id": sid_a, "destino_id": sid_b,
-                              "n_especificas": n, "coseno": c, "entidades_compartidas": ev})
+                              "n_especificas": n, "coseno": c,
+                              "entidades_compartidas": ev, "tipo": tipo})
             rel_filas.append({"origen_id": sid_b, "destino_id": sid_a,
-                              "n_especificas": n, "coseno": c, "entidades_compartidas": ev})
+                              "n_especificas": n, "coseno": c,
+                              "entidades_compartidas": ev, "tipo": tipo})
     for k in range(0, len(rel_filas), 500):
         sb.table("story_relations").insert(rel_filas[k:k+500]).execute()
     print(f"story_relations: {len(rel_filas)//2} pares ({len(rel_filas)} filas espejo)")
@@ -491,7 +546,7 @@ def main():
     print(f"Artículos con embedding: {len(articulos)}")
 
     idf, N = calcular_idf(articulos)
-    clusteres, por_id = construir_clusteres(articulos, idf)
+    clusteres, por_id, familia = construir_clusteres(articulos, idf)
 
     print(f"\n{'='*60}")
     print(f"Clústeres formados (2+ artículos, 2+ medios): {len(clusteres)}")
@@ -500,7 +555,7 @@ def main():
     print(f"Artículos clusterizados: {sum(tamanos)} de {len(articulos)} noticias")
     print(f"{'='*60}\n")
 
-    reescribir_stories(clusteres, por_id, idf)
+    reescribir_stories(clusteres, por_id, idf, familia)
     print("stories/story_articles reescritos. Revisá con el query de inspección.")
 
 if __name__ == "__main__":
