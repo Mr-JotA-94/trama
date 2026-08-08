@@ -430,7 +430,7 @@ def calcular_scores(ids, por_id, idf):
 # ---------------------------------------------------------------------
 # Escritura (upsert de stories + reconstrucción de derivados)
 # ---------------------------------------------------------------------
-def reescribir_stories(clusteres, por_id, idf):
+def reescribir_stories(clusteres, por_id, idf, familia):
     # sid por clúster, calculado UNA vez (uuid_estable es determinista: mismo
     # clúster -> mismo id). Se necesita antes de tocar la BD para saber qué
     # stories existentes ya no corresponden a ningún clúster de esta corrida.
@@ -485,7 +485,7 @@ def reescribir_stories(clusteres, por_id, idf):
 
     # PASADA 1: stories (upsert) + story_articles; stashear (sid, centroide, específicas).
     nodos = []
-    for sid, ids, u in zip(sids, clusteres, ents_union):
+    for sid, ids, u, fam in zip(sids, clusteres, ents_union, familia):
         scores, anclas, ancla_principal = calcular_scores(ids, por_id, idf)
         fechas = [cuando(por_id[i]) for i in ids]
 
@@ -507,25 +507,34 @@ def reescribir_stories(clusteres, por_id, idf):
         } for i in ids]).execute()
 
         esp = {canon(e) for e in u if es_especifica(canon(e))}
-        nodos.append((sid, centroide_de_cluster(ids, por_id), esp))
+        nodos.append((sid, centroide_de_cluster(ids, por_id), esp, fam))
 
-    # PASADA 2: aristas espejo (story_relations). Motor n_especificas, guardia coseno.
+    # PASADA 2: aristas espejo (story_relations).
+    # Hermanas (misma familia, o sea: subhistorias nacidas del mismo componente
+    # partido por Louvain) emiten SIEMPRE tipo='misma_trama', con n_especificas
+    # y coseno calculados de verdad aunque no pasen las compuertas — es verdad
+    # mecánica del split, no una inferencia por umbral. El resto sigue el motor
+    # n_especificas + guardia coseno de siempre, con tipo='tematica'.
     rel_filas = []
     for x in range(len(nodos)):
-        sid_a, cen_a, esp_a = nodos[x]
+        sid_a, cen_a, esp_a, fam_a = nodos[x]
         for y in range(x + 1, len(nodos)):
-            sid_b, cen_b, esp_b = nodos[y]
+            sid_b, cen_b, esp_b, fam_b = nodos[y]
+            hermanas = fam_a is not None and fam_a == fam_b
             comp = esp_a & esp_b
-            if len(comp) < UMBRAL_N_ESPECIFICAS:
+            if not hermanas and len(comp) < UMBRAL_N_ESPECIFICAS:
                 continue
             cos = coseno(cen_a, cen_b)
-            if cos < GUARDIA_COSENO_REL:
+            if not hermanas and cos < GUARDIA_COSENO_REL:
                 continue
+            tipo = "misma_trama" if hermanas else "tematica"
             ev, n, c = sorted(comp), len(comp), round(cos, 4)
             rel_filas.append({"origen_id": sid_a, "destino_id": sid_b,
-                              "n_especificas": n, "coseno": c, "entidades_compartidas": ev})
+                              "n_especificas": n, "coseno": c,
+                              "entidades_compartidas": ev, "tipo": tipo})
             rel_filas.append({"origen_id": sid_b, "destino_id": sid_a,
-                              "n_especificas": n, "coseno": c, "entidades_compartidas": ev})
+                              "n_especificas": n, "coseno": c,
+                              "entidades_compartidas": ev, "tipo": tipo})
     for k in range(0, len(rel_filas), 500):
         sb.table("story_relations").insert(rel_filas[k:k+500]).execute()
     print(f"story_relations: {len(rel_filas)//2} pares ({len(rel_filas)} filas espejo)")
@@ -546,7 +555,7 @@ def main():
     print(f"Artículos clusterizados: {sum(tamanos)} de {len(articulos)} noticias")
     print(f"{'='*60}\n")
 
-    reescribir_stories(clusteres, por_id, idf)
+    reescribir_stories(clusteres, por_id, idf, familia)
     print("stories/story_articles reescritos. Revisá con el query de inspección.")
 
 if __name__ == "__main__":
