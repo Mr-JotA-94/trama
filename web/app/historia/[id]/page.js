@@ -421,11 +421,32 @@ export default async function Historia({ params }) {
     const hermanaIds = tramaRows.map((r) => r.destino_id);
     const { data: hermanas } = await supabase
       .from("stories")
-      .select("id, titulo, fecha_inicio, n_medios, n_articulos")
+      .select(`
+        id, titulo, fecha_inicio, n_medios, n_articulos,
+        story_articles ( score_neutralidad, articles ( titulo, tipo ) )
+      `)
       .in("id", hermanaIds);
 
-    // La actual usa tituloH (título canónico ya calculado); las hermanas usan
-    // stories.titulo crudo, igual que CardRelacionada.
+    // Mismo criterio de título que tituloH (canónico: el titular-noticia más
+    // neutral que no sea cita) para que el título no cambie al hacer clic
+    // desde el índice hacia la página destino de la hermana.
+    const hermanasConTitulo = (hermanas ?? []).map((s) => {
+      const arts = (s.story_articles ?? [])
+        .map((sa) => ({
+          tipo:              sa.articles?.tipo,
+          titulo:            sa.articles?.titulo,
+          score_neutralidad: sa.score_neutralidad,
+        }))
+        .filter((a) => a.titulo);
+      return {
+        id:            s.id,
+        fecha_inicio:  s.fecha_inicio,
+        n_medios:      s.n_medios,
+        n_articulos:   s.n_articulos,
+        titulo:        tituloCanonico(arts, s.titulo),
+      };
+    });
+
     const actual = {
       id: story.id,
       titulo: tituloH,
@@ -433,7 +454,7 @@ export default async function Historia({ params }) {
       n_medios: story.n_medios,
       n_articulos: story.n_articulos,
     };
-    const conjunto = [actual, ...(hermanas ?? [])];
+    const conjunto = [actual, ...hermanasConTitulo];
 
     if (conjunto.length >= 2) {
       // Orden del arco: día-calendario Bogotá ASC (viejo→nuevo). Desempate
