@@ -324,16 +324,16 @@ Las dos cards ancla se eligen así (criterio actualizado 2026-06-18):
   recaptura se disuelve al colapsar — correcto, no era cobertura cruzada real.
 
 ### ⭐ Evolución del modelo: grafo de historias relacionadas (idea de Jota)
-Más allá de clústeres aislados: artículos que NO son la misma noticia pero están
-ligados (una nota y su derivada, un hecho y su reacción). Relación ENTRE clústeres,
-no solo dentro. Mejor que el plan original. Implementar DESPUÉS de validar que el
-clustering simple funciona (HECHO 2026-06-16) — pero requiere tabla story_relations
-(no existe aún) y criterio de relacionamiento. El criterio será el mismo mecanismo
-de dos compuertas un nivel arriba (entidades IDF + coseno entre centroides de
-clúster), PERO con corte de similitud MEDIA, no alta: suficiente para ligar, no
-tanta como para fusionar. Los pares "mismo tema, distinto hecho" que el clustering
-rechaza (zona electoral, coseno 0.43–0.76) son precisamente las aristas candidatas
-del grafo. Números pendientes de medir SOBRE clústeres reales, no antes.
+### Exposición de story_relations en el frontend (corregido 2026-08-08)
+El grafo relacional se expone en /historia/[id] en DOS superficies distintas:
+- **"De la misma trama"** (arriba): sub-hechos hermanos del Louvain split
+  (tipo='misma_trama'). Verdad mecánica, no depende de NER → siempre expuesto.
+  Índice cronológico con "Estás aquí". (feat/indice-trama, 2026-08-08.)
+- **"Historias conectadas"** (abajo): relaciones temáticas (tipo='tematica',
+  n_especificas≥umbral). YA EXPUESTAS en producción — la nota previa "ocultas
+  hasta el re-backfill de NER" era stale. El re-backfill sigue pendiente y
+  MEJORARÁ la calidad de n_especificas, pero no gobierna la visibilidad.
+El query de este bloque filtra tipo='tematica' para no mezclar hermanas.
 
 **Criterio refinado con medición (2026-06-24, diag_relaciones v1–v4 — detalle en
 BITACORA):** la idea de "dos compuertas un nivel arriba" se corrigió con datos. El
@@ -344,7 +344,7 @@ nivel es df-de-clúster, no df-de-artículo). Funciona para hechos discretos. El
 (p. ej. campaña electoral) es un HUB IRREDUCIBLE por heurística de entidades (clúster
 grande = superficie de solapamiento grande); se controla con CAP DE IN-DEGREE en la capa
 de lectura (presentación), y la distinción contexto/seguimiento se difiere a Fase 3
-(LLM + tipo_relacion). story_relations = caché derivada pura (...). Esquema RESUELTO (migración 000010, dirigido-espejo, criterio n_esp≥3 ∧ cos≥0.50; ver BITACORA 2026-06-25). Grafo poblado pero NO expuesto hasta el re-backfill de NER.
+(LLM + tipo_relacion). story_relations = caché derivada pura (...). Esquema RESUELTO (migración 000010, dirigido-espejo, criterio n_esp≥3 ∧ cos≥0.50; ver BITACORA 2026-06-25). 
 
 ### Nota sobre expansión de medios y Fase 2
 El clustering opera sobre artículos, no sobre medios. Agregar un medio = config
@@ -416,6 +416,7 @@ diagnosticar su articleBody y fijar el bucket explícito antes de admitirlo.
 ### FASE 2 — Las historias se conectan
 Entidades + embeddings + clustering + vista del hilo rojo. Integrar Colombia+20 y
 La Silla Vacía DESPUÉS de validar el clustering con los 5 actuales.
+El clustering aplica Louvain (res 1.6, seed fijo) a todo componente >50 artículos, partiendo beats políticos de semanas en sub-hechos legibles. Validado 2026-08-08 (ver BITACORA). El grafo story_relations distingue ahora tipo: tematica (motor n_especificas + guardia coseno, oculto hasta re-backfill de NER) y misma_trama (subhistorias hermanas del mismo componente padre, verdad mecánica sin umbral, exento del bloqueo NER, expuesto en front).
 
 ### FASE 3 — El análisis de persuasión
 Pipeline NVIDIA NIM por clúster (≥3 medios), resaltador ámbar, resumen neutral, perfiles

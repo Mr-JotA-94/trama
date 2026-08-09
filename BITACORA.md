@@ -9,11 +9,80 @@ yo-del-futuro entienda el estado actual sin tener que reconstruirlo de memoria.
 
 ## Operaciones sobre datos (truncates y borrados)
 
+### 2026-08-09 — Vaciado de resumenes_dia vía CASCADE por migración de sid (no intencional)
+Durante la validación de corroboración por día, el crawler/clustering corrió (nunca se congeló) y
+el clúster de prueba `6678516b` (presidencia del Senado, pico 29 arts/día) creció y recalculó su
+uuid_estable, migrando a `5147e4cd` (pico 38 arts/día). `stories` borró la fila `6678516b`; el FK
+`resumenes_dia.story_id ON DELETE CASCADE` se llevó sus 6 filas de día por delante. Como era el
+único sid con filas en resumenes_dia, la tabla quedó globalmente en 0. Síntoma que despistó: el log
+de Actions decía "1 guardado" pero `count(*)`=0. NO fue bug ni pérdida forense (resumenes_dia es
+derivado y regenerable; el archivo inmutable de articles quedó intacto, 11962 filas). Causa raíz:
+condición de carrera crawler↔validación manual. Sin acción de reparación: se reapuntó al sid nuevo
+`5147e4cd` y se regeneró.
+
+## 2026-08-08 — Etapa 3 Frontend: "De la misma trama" (índice cronológico de sub-hechos)
+
+CONTEXTO. Tras el Louvain beat-split, las hermanas (mismo componente padre) quedan enlazadas en
+story_relations tipo='misma_trama'. Se decidió exponerlas como ENTIDAD de navegación —un índice
+cronológico del arco— y no como lista plana de enlaces. Frontend Tier 1, solo lectura.
+
+HALLAZGO QUE CAMBIÓ EL PLAN. El query de "Historias conectadas" (Q3) NO filtraba por tipo. Dos
+consecuencias: (a) la nota de Arquitectura "grafo temático oculto hasta re-backfill de NER" no
+está aplicada en el código —lo temático se expone en prod desde hace tiempo—; (b) tras introducir
+misma_trama en la misma tabla, las hermanas se colaban a ese bloque mal etiquetadas como "actores
+en común". Por eso la etapa NO fue aditiva pura: exigió un gate `.eq("tipo","tematica")` en Q3.
+Jota confirmó que "Historias conectadas" sí muestra tarjetas en prod → la nota del doc era stale,
+no una decisión vigente (corrección llevada a Arquitectura).
+
+DECISIONES (no hipótesis).
+- Gate temático en Q3 obligatorio (sin él, hermanas duplicadas). MEDIDO: en 5c39c972 (gabinete
+  Abelardo) ninguno de los 12 títulos del arco aparece ya en "Historias conectadas".
+- Orden del arco: día-calendario Bogotá ASC (no timestamp crudo: eso ordena por qué medio publicó
+  primero, ruido). Desempate intra-día: n_medios DESC (cobertura cruzada = señal forense), id ASC
+  para orden total estable. ASC deliberado, al revés que la Línea de tiempo de artículos (DESC).
+- Colapso preview top-3 por cobertura CON garantía del nodo actual: si "Estás aquí" no cae en el
+  top-3 natural, reemplaza al de menor cobertura y se reordena cronológico. MEDIDO con Catatumbo
+  (2 medios): entró igual. Expand con :has(), cero JS.
+- Título de hermana: tituloCanonico(story_articles) en vez de stories.titulo crudo. SÍNTOMA
+  medido por Jota: "el título cambia al entrar" (índice mostraba crudo, destino el canónico).
+  DECISIÓN: fijarlo, no diferirlo —una incoherencia de nombres agrieta la ilusión de entidad, que
+  es justo lo que la feature existe para crear. Costo aceptado: la query de hermanas ahora trae
+  story_articles (cacheado revalidate=300). No es fuente única de verdad (eso sería columna
+  canónica en pipeline), pero índice y destino ya calculan sobre los mismos representantes por-URL.
+
+VERIFICACIÓN (datos reales, no localhost mockeado). npm run build limpio. Familia Abelardo: arco
+de 12 ASC correcto, "Estás aquí" en el nodo justo, gate funcionando. Historia sin split (00986805):
+la sección no aparece, resto intacto. 35 orígenes hermanados = 16+12+7 confirmado.
+
+ESTADO: 3 commits en feat/indice-trama, PENDIENTE MERGE (confirmar en preview el commit 3 antes).
+Solo web/app/historia/[id]/page.js + globals.css. Docs de la sesión previa seguían sin commitear;
+se dejaron intactos para commitearse aparte (reflejo git-status-al-cerrar).
+
+- [2026-08-08] Sin operaciones sobre datos esta sesión. Frontend solo-lectura: ninguna migración,
+  truncate ni borrado. (La migración 000017 —columna tipo— fue de la sesión anterior.)
 
 Regla de Trama: el archivo es inmutable, nada se borra. Los truncates de abajo
 ocurrieron SOLO durante la fase de calibración (Fase 1), cuando el archivo aún no
 tenía valor histórico. A partir de Fase 2, truncar deja de ser aceptable: los
 cambios de esquema se hacen con migraciones que preservan datos.  
+
+[2026-08-08] MIGRACIÓN 000017: story_relations.tipo (aditiva, sin datos destruidos)
+ALTER ADD COLUMN tipo text NOT NULL DEFAULT 'tematica' + CHECK in ('tematica','misma_trama').
+Aplicada a mano en editor de Supabase, espejada en /supabase/migrations/ (nombre corregido: el
+.txt original tenía un espacio y extensión .txt; quedó 20260808000017_story_relations_add_tematica.sql).
+Aditiva con DEFAULT → código viejo siguió funcionando aunque se aplicara antes del deploy. Cero
+riesgo de datos: story_relations es caché derivada pura (delete-then-insert cada corrida). El
+CHECK evita que un typo futuro invente un tercer tipo en silencio.
+
+[2026-08-08] Rescate de docs sin commitear del CIERRE 2026-08-01
+Al crear la rama de esta unidad, git status reveló BITACORA.md Y Arquitectura.md modificados sin
+commit (más el .txt de la migración untracked) en fix/robustez-por-dia. Eran las notas de deuda
+del 2026-08-01 que el CIERRE anterior no llegó a commitear — trabajo real, no basura. Se
+commitearon a MAIN (no a la rama de fix, que puede quedar sin merge semanas por DeepInfra) en un
+commit de doc separado antes de partir la rama nueva. Aprendizaje de proceso → git status pasa a
+ser paso explícito del ritual de CIERRE. Además se mergeó fix/robustez-por-dia a main (el fix ya
+estaba confirmado en Actions; la VALIDACIÓN DE CALIDAD de la corroboración sigue pendiente — el
+merge no la cierra).
 
 [2026-07-30] SPLIT DE BEATS: selección de pares por ventana temporal (costo cuadrático RESUELTO)
 
@@ -382,6 +451,95 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 ---
 
 ## Deuda técnica conocida
+
+### 2026-08-09 — El gate verbatim agrupa HECHO + ENCUADRE cuando comparten suceso
+SÍNTOMA (medido, leído a ojo sobre material real): en el día 07-21 del clúster de la presidencia
+del Senado, `hechos_corroborados` agrupó bajo un mismo "hecho" cuatro spans donde dos describían la
+acción ("el PH votó por Henríquez") y dos la caracterizaban ("alianza inédita / inesperada"). El
+calificativo "alianza" es un ENCUADRE que el propio actor (Henríquez) NEGÓ públicamente ("no hay
+alianza"), pero viajó dentro de los hechos corroborados como si fuera establecido. En el día 07-20
+(mismo evento, otro día) el gate lo hizo BIEN: describió la coalición como acción ("gracias a los
+votos del PH") y dejó los encuadres en solo_un_medio. CAUSA PROBABLE: el verificador de spans valida
+PROCEDENCIA (substring verbatim real), no EQUIVALENCIA SEMÁNTICA — no distingue "votaron juntos"
+(hecho) de "fue una alianza" (interpretación) porque hablan del mismo suceso; los agrupa. El
+desempeño VARÍA por día según cómo el modelo redacte los spans, no es determinista. DECISIÓN: NO
+arreglar ahora. El núcleo factual siempre queda bien corroborado; solo el calificativo interpretativo
+se cuela a veces, y en el bloque de corroboración (no en solo_un_medio). Impacto: cosmético-editorial,
+no factual. REACTIVACIÓN: si a escala ensucia sistemáticamente la lectura, o si se decide que la tesis
+del producto ("te muestro coincidencias, no interpretaciones") exige separar acción de calificativo
+como probe explícito. Es unidad propia (tocar SYS_CORROBORA), no un parche suelto.
+
+### 2026-08-09 — `resumenes_dia.dia` es TIMESTAMP, no DATE (fricción de query)
+SÍNTOMA: `WHERE dia = '2026-07-20'` devuelve 0 filas aunque la fila existe; hay que mover el filtro
+a otro día o usar rango para que aparezca. CAUSA: la columna guarda timestamp con hora, la igualdad
+exacta compara contra 'X 00:00:00+00'. DECISIÓN: convivir; filtrar siempre por RANGO
+(`>= 'X' AND < 'X+1'`). NO migrar el tipo (riesgo > beneficio sobre tabla viva). Anotado para no
+volver a perder tiempo diagnosticando "no rows" que sí existen.
+
+- [2026-08-08] Sin deuda nueva DIFERIDA esta sesión. El síntoma medido "el título cambia al entrar"
+  se DECIDIÓ arreglar y se arregló (no es deuda). El mayor peso de la query de hermanas
+  (trae story_articles) es un trade-off ACEPTADO, cacheado 300s, no deuda. La fuente única de
+  verdad para el título canónico (columna en pipeline) queda como IDEA, no como deuda (ver Ideas).
+
+### [2026-08-08] LOUVAIN BEAT-SPLIT en producción — de idea backlogueada a Tier 3 desplegado
+
+Contexto: Louvain estaba fichado y pre-validado desde 2026-07-20 (res 1.6, seed fijo, churn=0
+sobre 400 clústeres), backlogueado por PRIORIDAD (cerrar corroboración por día primero), no por
+riesgo. Con esa corroboración pausada por degradación de DeepInfra —y Louvain sin tocar el LLM en
+ninguna parte— fue el uso correcto del tiempo bloqueado.
+
+RE-VALIDACIÓN Tier 0 antes de construir (diag_louvain_split.py, DESECHABLE, solo lectura,
+snapshot real 10997 arts / 620 clústeres). El churn=0 de julio se midió sobre un corpus que creció
+~1000 filas/día; BITACORA exigía re-medirlo, no asumirlo. 5 umbrales PRE-REGISTRADOS, los 5
+pasaron:
+- U1 (instrumento se valida a sí mismo): los componentes de mi loop de aristas == construir_clusteres.
+  El diag DEBE guardar las aristas que producción solo cuenta → réplica del doble loop → oportunidad
+  de divergir. Se corrieron AMBOS y se exigió sets idénticos antes de creer nada. PASA.
+- U2 rotos=0 en clústeres sanos (≤50). PASA.
+- U3 todo sid padre de beat sobrevive en una subcomunidad (enlace público no se rompe). PASA en 3/3.
+- U4 caída por filtro 2-medios post-split ≤15%. Resultado: 0%. PASA.
+- U5 (humano) subcomunidades coherentes a lectura de Jota. PASA: 15 sub-hechos legibles en el beat
+  Abelardo; Louvain EXPULSÓ solo 2 polizones que la transitividad había pegado (Restrepo/Fujimori
+  en Perú, seguridad de Triana) — el comportamiento exacto que compra el split.
+
+IMPLEMENTACIÓN (clustering_fase2.py, Tier 3, branch feat/louvain-split, 3 commits separados):
+construir_clusteres guarda aristas + particiona componentes >50 con louvain_communities (subgrafo
+determinista: nodos y aristas sorted, seed 42 — el seed solo reproduce si el orden de inserción es
+fijo) + filtro 2-medios POR COMUNIDAD + devuelve familia. reescribir_stories emite misma_trama
+entre hermanas. Migración de tipo espejada. networkx al pip inline del job de clustering.
+
+CORRIDA REAL (local ARM64, sin LLM → seguro): 3 componentes partidos (130→12, 344→16, 93→7),
+620→651 clústeres, terminó limpio, story_relations 3463 pares (6926 filas). El split PASA su gate
+de merge pre-registrado.
+
+LOAD-BEARING respetado (confirmado con diff filtrado contra origin/main, NO con el auto-resumen de
+la herramienta): umbrales de compuertas, uuid_estable, scores, poda de huérfanas — sin cambios.
+
+DECISIÓN DE DISEÑO — sobre-split < sub-split: en el beat del empalme (4f3b3736), las subcomunidades
+[3]/[4] son notas sinópticas casi gemelas del mismo sub-hecho → posible partición de más. Se acepta
+como limitación conocida de res 1.6 y NO se afina la resolución: un sobre-split es costo cosmético
+(dos hermanas que eran una), un sub-split reproduce el problema original. Res 1.6 cae del lado
+barato. Afinar reabre la calibración entera → unidad propia (ver Ideas).
+
+NOTA sobre el sid padre: el beat Abelardo cambió de sid (54b1342f → 203995c6) porque al crecer el
+clúster el artículo más antiguo del componente es otro. uuid_estable hizo lo correcto. Consecuencia:
+el viejo 54b1342f ahora es la subhistoria pequeña (posesión en base militar), no el monstruo —
+resolver a qué apunta el enlace de pruebas de Fase 3 antes de reusarlo.
+
+### [2026-08-08] Arista misma_trama: hermandad como verdad mecánica, no umbral
+
+La idea inicial de Jota era "darle un nivel superior de correlación" a las subhistorias en el mismo
+eje del grafo de relacionadas (coseno/n_especificas). Corrección de rumbo: la hermandad NO es más
+correlación en el mismo eje — es un TIPO distinto de arista con verdad mecánica. Dos subhistorias
+son hermanas SII salieron del mismo componente union-find de la corrida. No se infiere con umbrales;
+se sabe gratis en el momento del split. Implementación: pares de misma familia emiten SIEMPRE
+misma_trama con n_especificas/coseno REALES (calculados aunque no pasen compuertas — trazabilidad de
+cuánto se parecen), sin motor ni guardia. Si un par hermano también pasa el gate temático, gana
+misma_trama (una sola arista). Corrida real: 207 pares (414 filas) = C(16,2)+C(12,2)+C(7,2), clavado;
+muestra con valores reales (coseno 0.79–0.86, 17–23 específicas). Cobra además la reserva de
+tipo_relacion que Arquitectura §6 difería a Fase 3 — aquí llega su primer valor, y es mecánico, no
+LLM. Ventaja de exposición: las hermanas NO dependen de NER → exentas del bloqueo "grafo oculto
+hasta re-backfill"; se pueden mostrar en el front ya, a diferencia de las temáticas.
 
 2026-08-01 — Truncamiento de JSON en corroboración (síntoma / causa / decisión).
 Síntoma: Expecting ',' delimiter con crudo lleno, cortado a media palabra. Hipótesis
@@ -1528,6 +1686,35 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
+
+### 2026-08-09 — Congelar crawler durante ventanas de validación manual
+La condición de carrera crawler↔validación (ver Operaciones sobre datos) hace que cualquier sid de
+prueba pueda migrar bajo los pies a mitad de una validación manual. IDEA: un interruptor para pausar
+el cron de clustering (no el crawler de captura, solo el re-cluster) durante una ventana de validación,
+o un modo "validación" que congele membresías. Alternativa barata sin código: disparar validaciones
+justo DESPUÉS de un ciclo de 6h para tener ~6h de sid estable. Registrado como idea, no como tarea:
+mientras la validación sea manual y esporádica, la disciplina de "leer el resultado antes del próximo
+ciclo" alcanza.
+
+- [Idea 2026-08-08] Tira compacta "capítulo N de M · ver la trama" en el header + índice completo
+  más abajo — alternativa a índice completo arriba si roba foco al hecho actual. Era la opción 2
+  del diseño; no construida.
+- [Idea 2026-08-08] Extender el hilo rojo SVG (Bézier) al arco de la trama, no solo al hilo de
+  artículos. On-brand; hoy la espina del índice es CSS plana.
+- [Idea 2026-08-08] Fuente única de verdad para tituloCanonico (columna calculada una vez en el
+  pipeline, leída por índice y destino). Cierra "provablemente" la coherencia de títulos y es
+  barata en lectura; se enreda con la deuda de atemporalidad de tituloCanonico. Medir después.
+  
+### [2026-08-08] Gestión del tamaño de BITACORA
+- Índice al inicio (15-20 líneas: "decisiones que aún gobiernan el código", cada una con fecha
+  para saltar a la entrada). Mejora barata de navegación humana, sin tocar el cuerpo, sin decidir
+  qué archivar. Hacer cuando estorbe navegar.
+- Particionar por trimestre cuando cierre Fase 3: mover entradas del periodo cerrado a
+  BITACORA_2026Q3.md ÍNTEGRAS (sin resumir — resumir destruye el "por qué" detallado que es el
+  valor forense). BITACORA.md queda con lo vigente. NO hacer a mitad de fase: el criterio "¿sigue
+  gobernando una decisión viva?" es nítido en el cierre de fase, borroso con cosas en vuelo.
+  El costo real de crecer no es la lectura de Claudio (busca dirigido), es el presupuesto de
+  contexto y la navegación humana.
 
 [2026-07-30] Circuit-breaker por corrida (seguro, no arquitectura)
 
