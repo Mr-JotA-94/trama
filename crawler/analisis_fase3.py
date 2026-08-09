@@ -592,9 +592,9 @@ def _dia_key(member_hashes):
 
 
 def dia_ya_existe(dia_key):
-    fila = (sb.table("resumenes_dia").select("id")
+    fila = (sb.table("resumenes_dia").select("id, story_id")
             .eq("dia_key", dia_key).limit(1).execute().data)
-    return bool(fila)
+    return fila[0] if fila else None
 
 
 def _colapsar_por_url_dia(articulos):
@@ -662,26 +662,32 @@ def procesar_dia(story_id, articulos):
     resumenes_dia, idempotente por dia_key: salta los días ya guardados. Reemplaza a la
     corroboración-por-clúster monolítica (resumenes), que sobre hilos largos daba timeout y
     corroboraba mal (un representante por medio de semanas). Devuelve (guardados, saltados,
-    fallidos): un día que agota los reintentos del LLM se registra como fallo y el bucle
-    sigue con el resto de los días."""
+    adoptados, fallidos): un día que agota los reintentos del LLM se registra como fallo y el
+    bucle sigue con el resto de los días."""
     comparables = filtrar_comparables(articulos)
     por_dia = defaultdict(list)
     for a in comparables:
         por_dia[_dia_bogota(a)].append(a)
 
-    guardados = saltados = fallidos = 0
+    guardados = saltados = adoptados = fallidos = 0
     for dia in sorted(por_dia):
         arts = _colapsar_por_url_dia(por_dia[dia])
         if not arts:
             continue
         hashes = sorted(a["hash_sha256"] for a in arts)
         clave = _dia_key(hashes)
-        if dia_ya_existe(clave):
-            saltados += 1
-            continue
 
         pasada = "?"
         try:
+            fila = dia_ya_existe(clave)
+            if fila:
+                if fila["story_id"] == story_id:
+                    saltados += 1
+                    continue
+                sb.table("resumenes_dia").update({"story_id": story_id}).eq("id", fila["id"]).execute()
+                adoptados += 1
+                print(f"    día {dia.isoformat()} — adoptado (sid previo obsoleto)")
+                continue
             # Pasada 1: síntesis (todos los cuerpos del día; modo "redactar").
             pasada = "sintesis"
             r_sint = llamar_llm_json(SYS_SINTESIS_DIA, _prompt_sintesis_dia(arts))
@@ -716,7 +722,7 @@ def procesar_dia(story_id, articulos):
             fallidos += 1
             print(f"    día {dia.isoformat()} pasada={pasada} — FALLO: {e}")
             continue
-    return guardados, saltados, fallidos
+    return guardados, saltados, adoptados, fallidos
 
 
 # =======================================================================
@@ -824,9 +830,9 @@ def main():
     # Idempotente por dia_key: re-correr salta los días ya hechos. Reemplaza la síntesis única
     # (retirada de analizar_cluster) y la corroboración-por-clúster de resumenes.
     try:
-        g_dia, s_dia, f_dia = procesar_dia(args.story_id, articulos)
+        g_dia, s_dia, a_dia, f_dia = procesar_dia(args.story_id, articulos)
         fallidos += f_dia
-        print(f"resúmenes por día — {g_dia} guardados, {s_dia} skip (caché), {f_dia} fallidos")
+        print(f"resúmenes por día — {g_dia} guardados, {s_dia} skip (caché), {a_dia} adoptados, {f_dia} fallidos")
     except Exception as e:
         fallidos += 1
         print(f"  resúmenes por día — FALLO: {e}")
