@@ -48,7 +48,7 @@ MAX_TOKENS = 16000
 PROMPT_VERSION = "v2"   # v2: SYS_CORROBORA pasa de "máximo 5" (cuota) a techo-con-prioridad
                         # (hasta 6/4, ordenado por fuerza de corroboración, sin relleno).
 
-TIMEOUT_TOTAL = 120       # segundos, timeout total de la llamada (no por-socket)
+TIMEOUT_TOTAL = 300       # segundos, timeout total. 300 (subido de 120): la corroboración de días densos (4+ medios sobre evento masivo) rebasa 120s de generación — medido en 6678516b día 2026-07-20.
 MAX_REINTENTOS = 4
 BACKOFF_BASE = 2          # segundos: 2, 4, 8, 16...
 
