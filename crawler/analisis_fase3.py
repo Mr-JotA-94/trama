@@ -1,8 +1,8 @@
 # crawler/analisis_fase3.py — Tier 2, load-bearing.
-# Fase 3 v1: comparación inter-medio (por par) + resumen por clúster (corroboración +
-# síntesis), vía LLM (DeepInfra). El análisis es caché derivado: idempotente, keyed por
-# hash de contenido — se puede borrar `comparaciones`/`resumenes` y reconstruir sin
-# perder nada (el archivo fuente en `articles` es la verdad).
+# Fase 3 v1: comparación inter-medio (por par) + corroboración/síntesis por día
+# (ventana-día, resumenes_dia), vía LLM (DeepInfra). El análisis es caché derivado:
+# idempotente, keyed por hash de contenido — se puede borrar `comparaciones`/
+# `resumenes_dia` y reconstruir sin perder nada (el archivo fuente en `articles` es la verdad).
 #
 # El verificador verbatim es el gate de publicación: ningún span que el LLM devuelva se
 # guarda si no es subcadena literal (normalizada) del texto del medio que lo declara.
@@ -61,7 +61,7 @@ BOGOTA = ZoneInfo("America/Bogota")  # ventana temporal = día calendario en hor
 # Prompts (system) — HARDCODEADOS a propósito (auditar el prompt exacto que produjo
 # cada fila es parte del contrato de Fase 3). Validados en diagnóstico:
 # SYS_COMPARACION viene de diag_v1_solospans.py (105 spans / 0 fabricación).
-# SYS_CORROBORA y SYS_SINTESIS vienen de diag_bakeoff2.py (bakeoff que ganó GLM).
+# SYS_CORROBORA viene de diag_bakeoff2.py (bakeoff que ganó GLM).
 # ---------------------------------------------------------------------
 
 SYS_COMPARACION = """Eres un analista forense de medios. Recibes DOS versiones de un hecho, de dos medios colombianos distintos. Tu trabajo NO es redactar ni explicar: es SEÑALAR, copiando fragmentos LITERALES, en qué difieren las dos coberturas. Un sistema posterior verifica que cada fragmento sea copia exacta del texto; si no lo es, se descarta. Por eso NO parafrasees, NO resumas, NO redactes glosas: solo copiá fragmentos tal cual aparecen.
@@ -125,21 +125,6 @@ FORMATO — responde ÚNICAMENTE este JSON, sin markdown ni texto extra:
   ]
 }"""
 
-SYS_SINTESIS = """Eres un redactor de una hemeroteca. Recibes una lista de HECHOS YA VERIFICADOS: fragmentos textuales que varios medios colombianos reportaron sobre el mismo suceso. NO tenés acceso a los artículos originales; solo a estos fragmentos.
-
-Escribí una síntesis de MÁXIMO 2 FRASES (unas 40 palabras) que le permita a un lector entender en segundos de qué se trata la noticia.
-
-REGLAS DURAS:
-- Usá ÚNICAMENTE información contenida en los fragmentos. Si un dato no está en los fragmentos, NO existe: no lo agregues, no lo deduzcas, no lo completes con lo que sepas del tema.
-- NO inventes ni ajustes cifras, fechas, lugares ni nombres. Copiá las cifras tal como aparecen (si dice "al menos 5", no escribas "5").
-- NO uses adjetivos de valoración ni califiques a nadie ("polémico", "grave", "escandaloso"). Tono factual y sobrio.
-- NO atribuyas a medios ni digas "según los medios": redactá el hecho.
-- NO opines, no contextualices con información externa, no especules sobre consecuencias.
-- Si los fragmentos son insuficientes para una síntesis clara, escribí una sola frase con lo que sí está.
-
-FORMATO — responde ÚNICAMENTE este JSON, sin markdown ni texto extra:
-{"sintesis": "máximo 2 frases"}"""
-
 
 # =======================================================================
 # Verificador verbatim (gate de publicación)
@@ -166,29 +151,6 @@ def span_valido(span, texto_fuente):
     if len(span_norm.split()) < MIN_PALABRAS_SPAN:
         return False
     return span_norm in normalizar(texto_fuente)
-
-
-_RE_NUMERO = re.compile(r"\d+")
-_RE_PROPIO = re.compile(r"\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}\b")
-
-
-def _verificar_sintesis_parcial(sintesis, hechos_validos):
-    """Verificador PARCIAL de la síntesis: a diferencia del de comparación/
-    corroboración, NO bloquea. La síntesis es prosa generada (no una cita), así que
-    exigirle subcadena literal completa sería demasiado estricto. Pero un número o
-    nombre propio que aparece en la síntesis y en NINGÚN span verificado es la señal
-    más barata de alucinación — se registra como advertencia para revisión manual."""
-    if not sintesis:
-        return
-    texto_spans = normalizar(" ".join(
-        s.get("span", "") for h in hechos_validos for s in h.get("spans", [])
-    ))
-    for numero in _RE_NUMERO.findall(sintesis):
-        if numero not in texto_spans:
-            print(f"[fase3] ADVERTENCIA: número '{numero}' en síntesis sin span que lo respalde")
-    for propio in _RE_PROPIO.findall(sintesis):
-        if normalizar(propio) not in texto_spans:
-            print(f"[fase3] ADVERTENCIA: nombre propio '{propio}' en síntesis sin span que lo respalde")
 
 
 # =======================================================================
@@ -271,7 +233,7 @@ def llamar_llm_json(system_prompt, user_prompt):
     devolvió JSON limpio), reintenta UNA vez en el mismo hilo de conversación
     pidiéndole explícitamente que corrija y devuelva solo el JSON — mismo patrón que
     los diag. Si el reintento también falla, propaga la excepción (la captura el
-    llamador: analizar_par/analizar_cluster, o el try/except de main())."""
+    llamador: analizar_par/_corroborar_dia, o el try/except de main())."""
     mensajes = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -301,19 +263,6 @@ def par_ya_existe(hash_a, hash_b):
     return bool(fila)
 
 
-def cluster_key_de(hashes):
-    """sha256 del set ordenado de hash_sha256 de los miembros del clúster. Determinista:
-    mismo conjunto de artículos -> misma clave, sin importar el orden de entrada."""
-    ordenados = sorted(set(hashes))
-    return hashlib.sha256("|".join(ordenados).encode("utf-8")).hexdigest()
-
-
-def cluster_ya_existe(cluster_key):
-    fila = (sb.table("resumenes").select("id")
-            .eq("cluster_key", cluster_key).limit(1).execute().data)
-    return bool(fila)
-
-
 # =======================================================================
 # Filtro de rol
 # =======================================================================
@@ -328,13 +277,9 @@ def filtrar_comparables(articulos):
 # =======================================================================
 # Construcción de prompts de usuario
 # ---------------------------------------------------------------------
-# "medio" en las respuestas del LLM es el slug del outlet (contrato de los tres
-# prompts): por eso comparación/corroboración le pasan el slug de cada artículo,
-# no su id/hash, y la verificación de spans matchea por slug.
-#
-# La síntesis es el caso especial: el LLM NO ve los artículos originales, solo los
-# hechos_corroborados YA VERIFICADOS (formato exacto abajo) — así se garantiza que
-# no pueda "recordar" nada que no haya sobrevivido el verificador de la pasada 1.
+# "medio" en las respuestas del LLM es el slug del outlet (contrato de los prompts):
+# por eso comparación/corroboración le pasan el slug de cada artículo, no su id/hash,
+# y la verificación de spans matchea por slug.
 # =======================================================================
 
 def _fecha_de(a):
@@ -352,13 +297,9 @@ def _prompt_usuario_comparacion(a, b):
     return _bloque_medio(a) + "\n\n---\n\n" + _bloque_medio(b)
 
 
-def _prompt_usuario_corrobora(comparables):
-    return "\n\n===\n\n".join(_bloque_medio(a) for a in comparables)
-
-
 def _un_articulo_por_medio(articulos):
     """Colapsa a un artículo representativo por outlet (el más reciente, mismo
-    criterio que colapsar_por_url en fase2). Los tres prompts asumen 'un medio, una
+    criterio que colapsar_por_url en fase2). Los prompts asumen 'un medio, una
     versión' (comparación INTER-medio); la transitividad del clustering puede meter
     2+ artículos del mismo outlet en un clúster sin que se hayan comparado nunca
     entre sí. Sin este colapso, por_slug pisaría uno de los dos en silencio y el LLM
@@ -376,16 +317,6 @@ def _un_articulo_por_medio(articulos):
         if actual is None or (_fecha_de(a), a["hash_sha256"]) > (_fecha_de(actual), actual["hash_sha256"]):
             por_medio[slug] = a
     return list(por_medio.values())
-
-
-def _prompt_usuario_sintesis(hechos_validos):
-    lineas = ["Fragmentos verificados sobre un mismo suceso. Escribí la síntesis. Responde SOLO el JSON.", ""]
-    for i, hecho in enumerate(hechos_validos, start=1):
-        medios = ", ".join(dict.fromkeys(s["medio"] for s in hecho["spans"]))
-        lineas.append(f"HECHO {i} (reportado por {medios}):")
-        for s in hecho["spans"]:
-            lineas.append(f"   - «{s['span']}»")
-    return "\n".join(lineas)
 
 
 # =======================================================================
@@ -489,84 +420,16 @@ def analizar_par(article_a, article_b):
     }
 
 
-def analizar_cluster(story_id, articulos):
-    """Corre las dos pasadas de clúster (corroboración de hechos, luego síntesis)
-    sobre los artículos 'noticia' de una story. Cachea por cluster_key (hash del set
-    de hash_sha256 de los miembros). Devuelve dict listo para insertar en
-    `resumenes`, o None si el clúster ya está en caché o tiene <2 comparables."""
-    comparables = filtrar_comparables(articulos)
-    if len(comparables) < 2:
-        return None
-
-    hashes = [a["hash_sha256"] for a in comparables]
-    cluster_key = cluster_key_de(hashes)
-    if cluster_ya_existe(cluster_key):
-        return None
-
-    representantes = _un_articulo_por_medio(comparables)
-    if len(representantes) < 2:
-        return None
-    por_slug = {a["medio_slug"]: a for a in representantes}
-
-    # Pasada 1: corroboración — ¿qué hechos confirman 2+ medios distintos?
-    resultado_corrobora = llamar_llm_json(SYS_CORROBORA, _prompt_usuario_corrobora(representantes))
-
-    hechos_validos = []
-    for hecho in resultado_corrobora.get("hechos_corroborados", []):
-        spans_validos = []
-        medios_vistos = set()
-        for s in hecho.get("spans", []):
-            fuente = por_slug.get(s.get("medio"))
-            if fuente is None:
-                continue
-            if span_valido(s.get("span", ""), fuente["contenido_visible"] or ""):
-                spans_validos.append(s)
-                medios_vistos.add(s["medio"])
-        # Un hecho corroborado es válido solo si sobreviven spans de >=2 medios
-        # distintos DESPUÉS del filtro verbatim (no antes: un solo medio con dos
-        # spans no es corroboración cruzada).
-        if len(medios_vistos) >= 2:
-            hechos_validos.append({"spans": spans_validos})
-
-    # "solo_un_medio" son igual de citables que los corroborados: mismo gate verbatim,
-    # sin la exigencia de 2+ medios (por definición, es de uno solo).
-    solo_un_medio_validos = []
-    for item in resultado_corrobora.get("solo_un_medio", []):
-        fuente = por_slug.get(item.get("medio"))
-        if fuente and span_valido(item.get("span", ""), fuente["contenido_visible"] or ""):
-            solo_un_medio_validos.append(item)
-
-    # Pasada 2 (síntesis única) RETIRADA: la reemplaza sintetizar_por_dia (digest por
-    # ventana-día). La síntesis única sobre spans corroborados combinaba hechos de días
-    # distintos en una cadena causal que ningún span sostenía (F5, caso Popayán 25-jul).
-    # El troceo por día lo elimina por construcción (una foto de un día no encadena en el
-    # tiempo). La corroboración (hechos_corroborados/solo_un_medio) NO cambia; sigue siendo
-    # el aporte firmado de `resumenes`. `sintesis` queda NULL aquí a propósito.
-    # (SYS_SINTESIS, _prompt_usuario_sintesis y _verificar_sintesis_parcial quedan sin uso:
-    #  candidatos a limpieza en un commit posterior, no se tocan ahora para acotar el diff.)
-
-    return {
-        "cluster_key": cluster_key,
-        "story_id": story_id,
-        "article_ids": [a["id"] for a in comparables],
-        "member_hashes": hashes,
-        "hechos_corroborados": hechos_validos,
-        "solo_un_medio": solo_un_medio_validos,
-        "sintesis": None,
-        "modelo": MODELO,
-        "prompt_version": PROMPT_VERSION,
-    }
-
-
 # =======================================================================
 # Síntesis por día (digest por ventana-día con atribución de medios)
 # ---------------------------------------------------------------------
-# Reemplaza la síntesis-única-por-clúster. Cada día del clúster recibe su propio digest
-# breve, con los CUERPOS COMPLETOS de ese día (todas las voces, colapsadas por URL). Validado
-# en diag_sintesis_por_dia (2026-07-31): cero F5 intra-día sobre el caso Popayán, sin
-# structural collapse hasta 234k chars/día (Louvain NO es prerequisito), longitud variable
-# según densidad del día (aceptada por diseño). Idempotente por dia_key: se salta los días ya
-# analizados, igual que analizar_cluster con cluster_key.
+# Reemplaza la corroboración+síntesis por clúster (función retirada, tabla `resumenes`:
+# sobre hilos largos daba timeout y corroboraba mal). Cada día del clúster
+# recibe su propio digest breve, con los CUERPOS COMPLETOS de ese día (todas las voces,
+# colapsadas por URL). Validado en diag_sintesis_por_dia (2026-07-31): cero F5 intra-día
+# sobre el caso Popayán, sin structural collapse hasta 234k chars/día (Louvain NO es
+# prerequisito), longitud variable según densidad del día (aceptada por diseño).
+# Idempotente por dia_key: se salta los días ya analizados.
 # =======================================================================
 
 SYS_SINTESIS_DIA = """Eres un redactor de una hemeroteca forense. Recibes los ARTÍCULOS COMPLETOS que varios medios colombianos publicaron EN UN MISMO DÍA sobre una misma historia en desarrollo. Escribí una síntesis BREVE de lo que se movió ESE día.
@@ -586,7 +449,7 @@ FORMATO — responde ÚNICAMENTE este JSON, sin markdown ni texto extra:
 
 def _dia_key(member_hashes):
     """Idempotencia del día: sha256 del set ordenado de hash_sha256 de los artículos del día.
-    Mismo día, mismos artículos -> misma clave -> no se re-analiza. Análogo a cluster_key_de."""
+    Mismo día, mismos artículos -> misma clave -> no se re-analiza."""
     ordenados = sorted(set(member_hashes))
     return hashlib.sha256("|".join(ordenados).encode("utf-8")).hexdigest()
 
@@ -631,8 +494,8 @@ def _prompt_corrobora_dia(por_medio):
 def _corroborar_dia(por_medio):
     """por_medio: {slug: [notas del medio ese día]}. Corrobora entre medios DISTINTOS. El gate
     valida cada span contra el texto UNIDO de todas las notas de su medio ese día (así un hecho
-    que aparece en una nota secundaria del medio también cuenta). Idéntica lógica de gate que
-    analizar_cluster: un hecho corroborado sobrevive solo con spans verbatim de >=2 medios."""
+    que aparece en una nota secundaria del medio también cuenta). Un hecho corroborado sobrevive
+    solo con spans verbatim de >=2 medios."""
     texto_por_medio = {slug: " ".join((a["contenido_visible"] or "") for a in arts)
                        for slug, arts in por_medio.items()}
     resultado = llamar_llm_json(SYS_CORROBORA, _prompt_corrobora_dia(por_medio))
@@ -736,13 +599,6 @@ def guardar_comparacion(fila):
         print(f"[fase3] ERROR guardando comparación {fila['hash_a'][:8]}/{fila['hash_b'][:8]}: {e}")
 
 
-def guardar_resumen(fila):
-    try:
-        sb.table("resumenes").insert(fila).execute()
-    except Exception as e:
-        print(f"[fase3] ERROR guardando resumen de story {fila['story_id']}: {e}")
-
-
 def guardar_resumen_dia(fila):
     """Un día, un análisis vigente: al cambiar la composición del día (dia_key nuevo)
     la versión anterior se retira. resumenes_dia es análisis derivado y regenerable,
@@ -825,25 +681,9 @@ def main():
         guardados += 1
         print(f"  par {etq} — guardado")
 
-    try:
-        resumen = analizar_cluster(args.story_id, articulos)
-    except Exception as e:
-        fallidos += 1
-        print(f"  resumen — FALLO: {e}")
-        if isinstance(e, ErrorParseoJSON):
-            print(f"    crudo: {e.crudo[:300]!r}")
-    else:
-        if resumen is None:
-            saltados += 1
-            print("resumen — skip (caché o <2 comparables)")
-        else:
-            guardar_resumen(resumen)
-            guardados += 1
-            print("resumen — guardado")
-
     # Síntesis + corroboración por día (digest cronológico + hechos corroborados por ventana).
-    # Idempotente por dia_key: re-correr salta los días ya hechos. Reemplaza la síntesis única
-    # (retirada de analizar_cluster) y la corroboración-por-clúster de resumenes.
+    # Idempotente por dia_key: re-correr salta los días ya hechos. Reemplaza la corroboración
+    # + síntesis por clúster (retirada).
     try:
         g_dia, s_dia, a_dia, f_dia = procesar_dia(args.story_id, articulos)
         fallidos += f_dia
