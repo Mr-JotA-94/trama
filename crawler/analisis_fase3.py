@@ -744,10 +744,25 @@ def guardar_resumen(fila):
 
 
 def guardar_resumen_dia(fila):
+    """Un día, un análisis vigente: al cambiar la composición del día (dia_key nuevo)
+    la versión anterior se retira. resumenes_dia es análisis derivado y regenerable,
+    NO archivo inmutable (esa regla aplica a articles). El DELETE va DESPUÉS del insert
+    exitoso: si el insert falla, la versión previa sobrevive en vez de perderse el día."""
+    nueva_id = None
     try:
-        sb.table("resumenes_dia").insert(fila).execute()
+        res = sb.table("resumenes_dia").insert(fila).execute()
+        nueva_id = (res.data or [{}])[0].get("id")
     except Exception as e:
         print(f"[fase3] ERROR guardando resumen_dia {fila['story_id']} {fila['dia']}: {e}")
+        return
+    try:
+        q = (sb.table("resumenes_dia").delete()
+             .eq("story_id", fila["story_id"]).eq("dia", fila["dia"]))
+        if nueva_id:
+            q = q.neq("id", nueva_id)
+        q.execute()
+    except Exception as e:
+        print(f"[fase3] AVISO: no se pudo retirar versión previa de {fila['dia']}: {e}")
 
 
 # =======================================================================
