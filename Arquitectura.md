@@ -212,6 +212,16 @@ sub-hechos que un colapso 1-por-medio perdía. La síntesis única y la corrobor
 clúster quedan retiradas/a-retirar. El gate mecánico valida procedencia; la robustez del
 modelo (con contexto completo) es lo que evita la fabricación, no la restricción del input.
 
+### Inmutabilidad: evidencia vs. análisis derivado
+La regla "fila nueva, nunca UPDATE" aplica a `articles` (el archivo forense: evidencia con valor
+probatorio). NO aplica a los derivados LLM (`comparaciones`, `resumenes_dia`), que son caché
+regenerable anclado a hashes de contenido. Consecuencias de diseño:
+- `resumenes_dia` mantiene UN análisis vigente por (story_id, dia): al cambiar la composición del
+  día (dia_key nuevo), la versión previa se RETIRA (DELETE post-insert), no se acumula.
+- El FK story_id es ON DELETE SET NULL (no CASCADE): un re-split que mata el sid deja la fila
+  huérfana y adoptable por dia_key, en vez de destruir trabajo LLM caro.
+- El anclaje del derivado es el contenido inmutable (dia_key = hash de hashes del día), no la
+  etiqueta volátil (story_id, que es uuid5 del artículo más antiguo y muta al recomponerse el clúster).
 ---
 
 ## 6. Clustering (Fase 2 — el corazón intelectual)

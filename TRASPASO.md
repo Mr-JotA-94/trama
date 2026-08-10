@@ -1,9 +1,8 @@
 # TRASPASO — Estado volátil de Trama
-> Última actualización: 2026-08-09 (sesión VALIDACIÓN CORROBORACIÓN POR DÍA en Actions.
-> Fix de robustez por-día validado en prod; causa del fallo del día denso = TIMEOUT en
-> corroboración, resuelto con TIMEOUT_TOTAL=300 (en main). Corroboración por día LEÍDA
-> sobre material real y aprobada, con una deuda de calidad registrada. feat/indice-trama
-> sigue PENDIENTE MERGE de la sesión anterior.)
+> Última actualización: 2026-08-09 (sesión ROBUSTEZ + CONSOLIDACIÓN FASE 3. Corroboración
+> por día VALIDADA en prod con lectura humana. Opción A —desacople resumenes_dia↔sid vía
+> adopción perezosa— IMPLEMENTADA Y VALIDADA (V3). Retirada la corroboración por clúster.
+> feat/indice-trama MERGEADO a prod.)
 > Autoridad: este archivo manda sobre memoria. Estado volátil vive AQUÍ.
 
 ## Quién soy y cómo trabajamos
@@ -15,60 +14,49 @@ Soy Jota (Johan). Claude es "Claudio". Reglas que NO se pierden:
   CAMBIOS de código en repo, y NO ejecuta DDL contra Supabase (migraciones a mano).
 - **Un chat = UNA unidad de trabajo = un cierre.**
 - **Flujo git:** branch antes de tocar código. Commits de doc SEPARADOS de los de código.
-- Los diag_*.py y sus .md de salida son desechables y NO se commitean (van al .gitignore).
+- Los diag_*.py y sus .md de salida son desechables y NO se commitean.
 - **Umbral de éxito se fija ANTES de correr.**
 - **Ningún % corona una feature sin LEER material real** (2026-07-20).
 - **El error del modelo se DESPLAZA, no se reduce, cuando redacta** (2026-07-21).
-- **Éxito concluyente, fracaso no (en generación):** un modelo mejor puede resolver lo que otro
-  falla. GLM resolvió la deriva del 70B (2026-07-22).
 - **El verificador mecánico ordena; la fidelidad la juzga el ojo humano.** El substring valida
   procedencia, NO relación causal ni equivalencia semántica.
 - **Un ítem malo no tumba el batch:** try/except por ítem + retry.
-- **El instrumento de medición también se valida** (2026-07-30 / reforzado 2026-08-08): un diag
-  que mide la métrica equivocada miente con números. El U1 (réplica==producción) es el gate
-  del propio diag antes de creer en el resto.
-- **Antes de culpar al código, descartar el entorno** (2026-07-30 / reforzado 2026-08-01 y 08-09).
-- **[2026-08-01] El gate mecánico no distingue "el modelo fabrica" de "el input estaba
-  mutilado".** Con cuerpos completos GLM NO fabricó el puente causal de Popayán; con solo los
-  spans (input pobre), SÍ. Cuando el modelo es robusto, dar contexto > restringir.
+- **El instrumento de medición también se valida.** REFORZADO 2026-08-09: mis propios patrones de
+  grep de verificación también son instrumento — `_prompt_usuario_` sin \b matcheaba una función
+  viva; el word-boundary importa.
+- **Antes de culpar al código, descartar el entorno.** REFORZADO 2026-08-09: DeepInfra devolvió
+  body vacío ('') transitorio; re-correr (idempotencia) lo distinguió de fallo determinista.
 - **[2026-08-01] Trocear por DÍA mata la deriva causal por construcción.**
 - **[2026-08-01] Techo, NO cuota.** "Hasta N, priorizado por fuerza, menos si corresponde."
-- **[2026-08-01] Ver el crudo ANTES de fijar el fix.** La hipótesis equivocada lleva al parche
-  equivocado (el truncamiento JEP era max_tokens, no comillas). REAFIRMADO 2026-08-09: el fallo
-  del día denso PARECÍA max_tokens y era TIMEOUT; leer el mensaje del error lo cantó.
-- **[2026-08-08] Sobre-split < sub-split.** Al partir beats, una comunidad partida de más
-  (dos hermanas que eran una) es costo cosmético; una partida de menos reproduce el problema
-  original. Entre los dos errores, res 1.6 cae del lado barato. NO afinar la resolución al ver
-  un sobre-split: reabre la calibración entera, es otra unidad.
-- **[2026-08-08] La hermandad es verdad mecánica, no inferencia por umbral.** Dos
-  subhistorias son hermanas SII salieron del mismo componente union-find. No se calibra: se sabe
-  gratis en el momento del split. Eje distinto al coseno/n_especificas del grafo temático.
-- **[2026-08-08] git status como paso del CIERRE.** El cierre del 2026-08-01 dejó BITACORA
-  y Arquitectura sin commitear; viajaron sucias hasta hoy. Un status al cerrar lo canta.
-- **[2026-08-08] Coherencia de nombres entre superficies.** El mismo objeto debe llamarse
-  igual donde se muestre (índice vs página destino).
-- **[2026-08-08] El doc de arquitectura puede mentir sobre lo que el código EXPONE.** Confirmar
-  en código/prod real, no en el doc, antes de asumir qué ve el usuario.
-- **[NUEVO 2026-08-09] El clustering NO es incremental: re-particiona el corpus entero cada
-  corrida.** Una historia puede GANAR artículos viejos de días ya no capturados, porque el IDF
-  global se recalibra con el corpus nuevo y aristas que antes no cruzaban umbral ahora sí. Eso NO
-  es "encaje forzado": es corrección de un sub-conteo previo. Verificar leyendo el material
-  (títulos + urls_unicos), no por intuición. Que las historias "respiren" es la propiedad que
-  permite al clustering corregir sus errores tempranos.
-- **[NUEVO 2026-08-09] Condición de carrera crawler↔validación manual.** El uuid_estable es
-  uuid5 del artículo más antiguo del clúster; si el crawler/clustering corre durante una
-  validación manual, el sid puede recalcularse, `stories` borra el viejo, y el FK
-  `resumenes_dia ON DELETE CASCADE` se lleva las filas de día por delante. Síntoma vivido:
-  "log dice guardado, la tabla da 0". Para validar sobre un sid estable hay que CONGELAR el
-  crawler durante la ventana, o aceptar que el sid migra y leer el resultado antes del próximo
-  ciclo de 6h.
-- **[NUEVO 2026-08-09] Fallo transitorio del proveedor ≠ fallo determinista del input.** GLM vía
-  DeepInfra devolvió body vacío ('') en el día denso una vez y al RE-CORRER (mismo input) entró.
-  Un re-run idempotente (dia_key salta lo bueno, reintenta solo lo fallido) es la forma barata de
-  distinguir transitorio de determinista antes de tocar código.
+- **[2026-08-01] Ver el crudo ANTES de fijar el fix.** REAFIRMADO 2026-08-09: el fallo del día
+  denso PARECÍA max_tokens y era TIMEOUT; leer el mensaje del error lo cantó. Subir max_tokens no
+  habría arreglado nada.
+- **[2026-08-08] Sobre-split < sub-split.** No afinar la resolución de Louvain al ver un
+  sobre-split: reabre la calibración entera, es otra unidad.
+- **[2026-08-08] La hermandad es verdad mecánica (mismo componente union-find), no umbral.**
+- **[2026-08-08] git status como paso del CIERRE.** MORDIÓ DE NUEVO 2026-08-09: docs de gobernanza
+  (TRASPASO/BITACORA/Arquitectura) viajaron modificados-sin-commitear entre ramas. Commit de doc
+  ANTES de cambiar de rama o borrar ramas.
+- **[2026-08-08] El doc de arquitectura puede mentir sobre lo que el código EXPONE.** Confirmar en
+  código/prod real. CASO VIVIDO 2026-08-09: "en mi mente indice-trama ya estaba en producción" —
+  y estaba en rama sin mergear. `git branch --merged main` es la verdad, no la memoria.
+- **[2026-08-09] El clustering NO es incremental: re-particiona el corpus entero cada corrida.**
+  Una historia puede GANAR/PERDER artículos de días ya no capturados porque el IDF global se
+  recalibra con el corpus nuevo. NO es "encaje forzado": es corrección de membresía. Verificar
+  leyendo material (títulos + urls_unicos), no por intuición. Que las historias "respiren" es la
+  propiedad que permite corregir errores tempranos de agrupamiento.
+- **[2026-08-09] Condición de carrera crawler↔validación manual.** El uuid_estable = uuid5 del
+  artículo más antiguo; si el clustering corre durante una validación manual, el sid puede
+  recalcularse, `stories` borra el viejo y (antes de Opción A) el CASCADE se llevaba resumenes_dia.
+  Síntoma vivido: "log dice guardado, la tabla da 0". Para sid estable: congelar crawler durante la
+  ventana, o leer el resultado antes del próximo ciclo de 6h. (El crawler NUNCA se congeló esta
+  sesión; el sid migró 6678516b→5147e4cd a mitad de validación.)
+- **[2026-08-09] resumenes_dia es DERIVADO y regenerable, NO archivo inmutable.** La regla
+  "fila nueva, nunca UPDATE" aplica a `articles` (evidencia forense), no al análisis. Un día se
+  re-analiza SII su dia_key cambia; al cambiar, la versión previa se RETIRA (no se acumula).
 
 ## Quién soy / qué es Trama
-Jota (Johan), dev único. Trama: hemeroteca forense de medios colombianos. En producción:
+Jota (Johan), dev único. Trama: hemeroteca forense de medios colombianos. Prod:
 trama-co.vercel.app. Claude = "Claudio".
 
 ## Stack
@@ -76,76 +64,88 @@ Crawler Python en GitHub Actions cada 6h → Supabase (Postgres + pgvector) → 
 Vercel. Monorepo Mr-JotA-94/trama (/crawler, /web, /supabase/migrations).
 **LLM Fase 3: zai-org/GLM-5.2 (DeepInfra) — SELLADO. temp 0.15, max_tokens 16000.**
 **TIMEOUT_TOTAL = 300** (subido de 120 el 2026-08-09: la corroboración de días densos —4+ medios
-sobre evento masivo— rebasa 120s de generación. NO era max_tokens: era tiempo. En main.)
-**PROMPT_VERSION = v2** (v2 = SYS_CORROBORA techo-con-prioridad). Filas v1 viejas coexisten.
-**ENTORNO PRODUCCIÓN = GitHub Actions (Linux x86_64).** El pipeline LLM vive AHÍ; validar
-carriles de respuesta larga (corroboración) AHÍ, no en local.
-**ENTORNO LOCAL (laptop de Jota) = Windows ARM64 + Python 3.14 — hostil para diags pesados.**
-Bug SSL de 3.14 (corrompe respuestas LARGAS) + falta de wheels ARM64. NO validar corroboración
-por día en local.
+sobre evento masivo— rebasa 120s de generación. NO era max_tokens: era TIEMPO. En main, validado.)
+**PROMPT_VERSION = v2.** Filas v1 viejas coexisten en `comparaciones` (237 v1 / resto v2).
+**ENTORNO PROD = GitHub Actions (Linux x86_64).** El pipeline LLM vive AHÍ.
+**ENTORNO LOCAL = Windows ARM64 + Python 3.14 — hostil.** Bug SSL 3.14 corrompe respuestas
+LARGAS. NO validar corroboración por día en local. (Terminal local = CMD/PowerShell: no hay
+`grep`/`gh` salvo que se instalen; usar `findstr`/`Select-String`, o la web de Actions.)
 
 ## Banco: 7 medios. Corpus ~11962 filas / crece ~1000/día.
-En cobertura cruzada: Vorágine=0, RTVC baja (deuda de pipeline).
 
 ## DÓNDE ESTAMOS
 
 **Fase 1 COMPLETA. Fase 2 EN PRODUCCIÓN + LOUVAIN BEAT-SPLIT** (clustering + feed + grafo, CI 6h).
+Louvain: componentes >50 → louvain_communities (res 1.6, seed 42), determinista. Arista
+`misma_trama` en story_relations.
 
-**LOUVAIN BEAT-SPLIT EN PRODUCCIÓN** (2026-08-08). `construir_clusteres` particiona todo
-componente > UMBRAL_BEAT=50 con louvain_communities (res 1.6, seed 42). Determinista (seed +
-nodos/aristas sorted). Arista `misma_trama` en story_relations para hermanas del mismo componente.
-
-**FRONTEND "DE LA MISMA TRAMA" — EN RAMA feat/indice-trama, PENDIENTE MERGE** (de sesión 08-08).
-Índice cronológico de sub-hechos hermanos arriba de /historia/[id]. 3 commits, verificado con
-datos reales. FALTA: confirmar en preview que el título ya no cambia al entrar (commit 3), y MERGE.
-NOTA: esta sesión (08-09) NO tocó esta rama; sigue igual que la dejó 08-08.
+**FRONTEND "DE LA MISMA TRAMA": MERGEADO A MAIN / EN PRODUCCIÓN (2026-08-09).** Índice cronológico
+de sub-hechos hermanos. Ya no está en rama; confirmado con `git branch --merged`.
 
 **Fase 3 — pipeline inter-medio. Estado por carril:**
 - **COMPARACIÓN (por par): validada y en producción.**
-- **SÍNTESIS POR DÍA: EN PRODUCCIÓN.** Mató el F5 por construcción.
+- **SÍNTESIS POR DÍA: EN PRODUCCIÓN.**
 - **CORROBORACIÓN POR DÍA: VALIDADA EN PRODUCCIÓN (2026-08-09).** Robustez por-día + timeout=300
-  probados sobre el día más denso del corpus (elección presidencia del Senado, 38 notas/4 medios).
-  Calidad LEÍDA a ojo: hechos duros corroborados (56 vs 45 votos, revés a De La Espriella, coalición
-  PH descrita como acción) correctamente separados de encuadres en solo_un_medio. VER DEUDA en
-  BITACORA: el gate agrupa hecho+encuadre cuando comparten suceso (desempeño variable por día).
-- **CORROBORACIÓN POR CLÚSTER (`resumenes`): VIVA, DESBLOQUEADA PARA RETIRO.** La por-día ya validó;
-  esta es la fase monolítica que sigue timeouteando en cada run (ruido en el log). Retirarla es la
-  próxima unidad (Camino A).
+  probados sobre el día más denso del corpus (presidencia del Senado, 37-38 notas/4 medios).
+  Calidad leída a ojo: hechos duros (56 vs 45 votos, revés a De La Espriella, coalición PH como
+  acción) separados de encuadres en solo_un_medio. DEUDA conocida (BITACORA): el gate agrupa
+  hecho+encuadre cuando comparten suceso; desempeño variable por día. No bloqueante.
+- **CORROBORACIÓN POR CLÚSTER (`analizar_cluster` / tabla `resumenes`): RETIRADA (2026-08-09).**
+  Código borrado del módulo (rama chore/retirar-corroboracion-cluster, mergeada). La TABLA
+  `resumenes` queda huérfana a propósito: DROP en migración aparte en unas semanas si nada la
+  extraña (código es reversible por git; DROP no).
 
-**FIX DE ROBUSTEZ (`procesar_dia` try/except por día): EN MAIN, VALIDADO.** Aisló fallos 3× en la
-sesión sin tumbar el pipeline. Antes, un día que agotaba reintentos mataba toda la fase por día.
-Ahora imprime `día AAAA-MM-DD pasada=sintesis|corroboracion — FALLO` y sigue. Devuelve 3-tupla
-(guardados, saltados, fallidos).
+**OPCIÓN A — DESACOPLE resumenes_dia↔sid: IMPLEMENTADA Y VALIDADA (2026-08-09).**
+Migración 000018: FK story_id CASCADE→SET NULL + story_id nullable. `dia_ya_existe` devuelve fila
+(no bool); `procesar_dia` ADOPTA (UPDATE story_id, cero LLM) los días huérfanos/migrados de
+composición intacta, en vez de regenerarlos. Devuelve 4-tupla (guardados, saltados, adoptados,
+fallidos). V3 validado en Actions: línea `día 2026-07-17 — adoptado (sid previo obsoleto)` con 0
+llamadas LLM. Cobertura parcial: el camino "story_id distinto pero NO NULL" no se ejercitó
+(mismo if, riesgo bajo).
 
-**ESQUEMA (aplicado a mano + espejado en /migrations):**
-- `comparaciones` (por par): hash_a/b, sin story_id (sobrevive a cualquier re-split).
-- `resumenes` (por clúster): cluster_key, story_id (FK SET NULL). A RETIRAR.
-- `resumenes_dia` (por día): dia_key UNIQUE (idempotencia), story_id (FK ON DELETE CASCADE),
-  sintesis, hechos_corroborados/solo_un_medio jsonb. **`dia` es TIMESTAMP con hora, NO date puro:**
-  filtrar por rango (`>= 'X' AND < 'X+1'`), la igualdad exacta `dia = 'X'` NO matchea.
-  **REGLA: un re-split del clúster (o migración de sid por crecimiento) obsoleta/borra vía CASCADE
-  los dia_key del sid afectado. Purgar/regenerar tras cualquier re-cluster.**
+**FIX un-análisis-por-día (2026-08-09):** `guardar_resumen_dia` hace DELETE post-insert de
+versiones previas del mismo (story_id, dia), EXCEPTO la recién creada (neq id). Insert primero: si
+falla, la versión vieja sobrevive en vez de perderse el día. Resuelve los duplicados por día que
+aparecen cuando la composición de un día cambia (dia_key nuevo coexistía con el viejo).
+
+**ESQUEMA:**
+- `comparaciones` (por par): hash_a/b, sin story_id. Sobrevive a cualquier re-split.
+- `resumenes` (por clúster): HUÉRFANA, a DROPEAR en migración futura.
+- `resumenes_dia` (por día): dia_key UNIQUE, story_id (FK **ON DELETE SET NULL**, nullable),
+  sintesis, hechos_corroborados/solo_un_medio jsonb. **`dia` es TIMESTAMP con hora, NO date:**
+  filtrar por RANGO (`>= 'X' AND < 'X+1'`), la igualdad `dia = 'X'` NO matchea.
 - `story_relations` + columna `tipo` ('tematica'|'misma_trama'). Migración 000017.
+- **Migración 000018** aplicada a mano + espejada: CASCADE→SET NULL en resumenes_dia.
 
-**MÓDULO: crawler/analisis_fase3.py** (TOCADO esta sesión)
-- `procesar_dia` (Tier 2): try/except por día + variable `pasada` (en main). Devuelve 3-tupla.
-- `TIMEOUT_TOTAL=300` (en main).
-- Sin cambios en prompts, esquema, ni max_tokens.
+**MÓDULO crawler/analisis_fase3.py — estado tras esta sesión:**
+- `procesar_dia`: try/except por día + `pasada` + adopción perezosa. Devuelve 4-tupla.
+- `guardar_resumen_dia`: DELETE post-insert (un análisis vigente por día).
+- `TIMEOUT_TOTAL=300`.
+- BORRADO: analizar_cluster, cluster_key_de, cluster_ya_existe, guardar_resumen, SYS_SINTESIS,
+  _verificar_sintesis_parcial (+ regex), _prompt_usuario_corrobora, _prompt_usuario_sintesis.
+- CONSERVADO (crítico): SYS_CORROBORA (compartido con _corroborar_dia), SYS_COMPARACION,
+  analizar_par, todo el carril por día.
+- VERIFICAR pendiente (no bloqueante): si `_un_articulo_por_medio` quedó huérfano tras el retiro
+  (lo usaba analizar_cluster). Inofensivo; limpiar en próxima pasada si no tiene otro llamador.
 
 ## PRÓXIMO PASO cuando retomemos
-1. **[INMEDIATO, independiente de todo] Merge de feat/indice-trama** (heredado de 08-08).
-   Confirmar en preview que el título de la hermana coincide con el <h1> destino, luego merge.
-2. **[DESBLOQUEADO] Retirar corroboración por clúster (`resumenes` / `analizar_cluster`).**
-   La por-día ya validó. Es código muerto que ensucia cada log con timeouts. Camino A, independiente
-   de DeepInfra. Limpieza + posible retiro de SYS_SINTESIS et al. si quedaron huérfanos.
-3. **[SI MOLESTA] Deuda de calidad del gate hecho-vs-encuadre** (ver BITACORA). NO bloqueante:
-   el núcleo factual siempre queda bien; solo el calificativo interpretativo viaja de polizón a
-   veces. Reactivar solo si a escala ensucia la lectura.
-4. Sigue pendiente: **backfill reanudable** (~8.4h > 6h de Actions) + **enganche al cron** con
-   Python 3.12 en CI. El clustering sigue MANUAL.
+1. **[SIGUIENTE UNIDAD] Backfill reanudable.** ~8.4h de trabajo LLM > límite 6h de Actions → hay
+   que chunkear con corte por tiempo + reanudabilidad. Ya hay media solución: idempotencia por
+   dia_key + caché por hash_a/hash_b = re-run salta lo hecho. Falta: control de tiempo (cortar
+   limpio antes del límite) y ORDEN de procesamiento (prioridad: recientes × cobertura n_medios;
+   historias de 2 artículos AL FINAL). Es unidad grande, chat propio.
+2. **Modelo de costos DeepInfra.** Variable que gobierna la factura recurrente: cuántos dia_key
+   cambian por ciclo de clustering (query a medir). Costo NO es acumulativo — proporcional al
+   delta de composición, decae al estabilizarse el corpus. Backfill = pico único; estado estable =
+   proporcional al flujo diario. Unidad propia con queries reales.
+3. **Enganche de Fase 3 al cron** — DESPUÉS del clustering, mismo workflow, Python 3.12. Depende de
+   1 y 2. Es la corona, y su propia mini-saga.
+4. DROP de tabla `resumenes` (migración) cuando pasen semanas sin extrañarla.
 
-## Cómo verificar (queries útiles de esta sesión)
-- Densidad por historia (elegir banco de prueba): CTE por_dia con max(arts_dia) pico + max medios.
-  Unir `articles → outlets` por outlet_id (el medio NO es columna de articles: es outlets.slug).
-- Leer resumenes_dia: filtrar `dia` por RANGO, no por igualdad (es timestamp).
-- Distinguir transitorio vs determinista: re-correr (idempotencia salta lo bueno) y ver si entra.
+## Cómo verificar (queries de esta sesión)
+- Densidad por historia (elegir banco): CTE por_dia, max(arts_dia) pico + max medios. Unir
+  articles→outlets por outlet_id (el medio es outlets.slug, NO columna de articles).
+- Canario de huérfanas: `SELECT count(*) FILTER (WHERE story_id IS NULL) FROM resumenes_dia;`
+- Duplicados por día: `... GROUP BY story_id, dia HAVING count(*) > 1;` (debe ser vacío tras el fix).
+- Leer resumenes_dia: filtrar `dia` por RANGO, no igualdad.
+- Distinguir transitorio vs determinista de DeepInfra: re-correr (idempotencia) y ver si entra.

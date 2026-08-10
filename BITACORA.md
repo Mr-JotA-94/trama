@@ -9,6 +9,29 @@ yo-del-futuro entienda el estado actual sin tener que reconstruirlo de memoria.
 
 ## Operaciones sobre datos (truncates y borrados)
 
+### 2026-08-10 — Migración 000018: resumenes_dia CASCADE→SET NULL (Opción A)
+Aplicada a mano en Supabase + espejada en /supabase/migrations/. `story_id` pasa a nullable; el FK
+resumenes_dia_story_id_fkey pasa de ON DELETE CASCADE a ON DELETE SET NULL. Verificado post-aplicación:
+`confdeltype='n'`. MOTIVO: el trabajo LLM (caro) se anclaba a story_id (volátil); un re-split que
+mataba el sid barría resumenes_dia por CASCADE. Con SET NULL la fila sobrevive huérfana y procesar_dia
+la ADOPTA (re-vincula por dia_key) en vez de regenerarla. Ancla el derivado a lo inmutable (hashes vía
+dia_key), no a la etiqueta volátil (sid).
+
+### 2026-08-10 — Vaciado accidental de resumenes_dia vía CASCADE (pre-000018)
+Durante la validación, el crawler/clustering corrió (nunca congelado) y el clúster de prueba 6678516b
+(presidencia del Senado) creció y migró su uuid_estable a 5147e4cd. `stories` borró 6678516b; el FK
+aún en CASCADE se llevó sus 6 filas de día. Como era el único sid con filas, resumenes_dia quedó
+globalmente en 0. Síntoma que despistó ~30 min: "log de Actions dice guardado, count(*)=0". NO fue
+bug ni pérdida forense (derivado regenerable; articles intacto). Causa raíz: condición de carrera
+crawler↔validación manual. Sin reparación: se reapuntó a 5147e4cd y se regeneró. Esta operación fue,
+de hecho, la que motivó aplicar 000018 el mismo día.
+
+### 2026-08-10 — Limpieza manual de 3 duplicados por día en resumenes_dia
+Tras un re-clustering que cambió la composición de 3 días (07-19, 07-20, 07-21) del clúster 5147e4cd,
+cada día quedó con 2 filas (dia_key viejo + nuevo), ambas con story_id válido (no huérfanas). Se
+borraron a mano las 3 viejas por `id` explícito (identificadas por `created_at` más antiguo), tras
+SELECT de verificación. total 10→7. El fix un-análisis-por-día (ver Deuda→resuelta) previene futuros.
+
 ### 2026-08-09 — Vaciado de resumenes_dia vía CASCADE por migración de sid (no intencional)
 Durante la validación de corroboración por día, el crawler/clustering corrió (nunca se congeló) y
 el clúster de prueba `6678516b` (presidencia del Senado, pico 29 arts/día) creció y recalculó su
@@ -451,6 +474,34 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 ---
 
 ## Deuda técnica conocida
+
+### 2026-08-10 — [RESUELTA EN LA MISMA SESIÓN] Duplicados por día al cambiar composición
+Corrige y REEMPLAZA la predicción previa de "huérfanas permanentes" (que resultó FALSA: las filas de
+dia_key obsoleto NO se huerfanaban —el sid seguía vivo—, quedaban como DUPLICADO por día con sid
+válido). SÍNTOMA MEDIDO: un día cuya composición cambia genera fila nueva (dia_key nuevo) sin retirar
+la vieja → 2 filas mismo (story_id, dia). RIESGO: si el frontend consulta resumenes_dia por
+(story_id, dia) encuentra 2 filas y no sabe cuál mostrar (bug de producto, no solo storage). CAUSA:
+guardar_resumen_dia solo insertaba, nunca retiraba versiones previas. FIX (aplicado): DELETE
+post-insert de versiones previas del mismo (story_id, dia) EXCEPTO la recién creada (neq id); insert
+primero para que un insert fallido no pierda el día. Decisión de fondo: resumenes_dia es DERIVADO, no
+hereda la inmutabilidad de articles. PENDIENTE de confirmar en el primer re-clustering real: que
+`.eq("dia", ...)` (string ISO vs columna timestamp) matchee; si no, pasar a rango.
+
+### 2026-08-10 — El gate verbatim agrupa HECHO + ENCUADRE cuando comparten suceso
+SÍNTOMA (leído a ojo, material real): en el día 07-21 de la presidencia del Senado,
+hechos_corroborados agrupó bajo un mismo "hecho" spans donde unos describían la acción ("el PH votó
+por Henríquez") y otros la caracterizaban ("alianza inédita") — encuadre que el propio actor
+(Henríquez) NEGÓ. El día 07-20 (mismo evento) lo hizo BIEN. CAUSA: el verificador valida PROCEDENCIA
+(substring verbatim), no EQUIVALENCIA SEMÁNTICA; no distingue "votaron" de "fue alianza" porque
+hablan del mismo suceso. Desempeño VARÍA por día según cómo el modelo redacte spans. DECISIÓN: NO
+arreglar ahora. Núcleo factual siempre queda bien; solo el calificativo interpretativo se cuela a
+veces. Impacto cosmético-editorial, no factual. REACTIVACIÓN: si a escala ensucia la lectura, o si se
+decide un probe explícito acción-vs-calificativo (tocar SYS_CORROBORA; unidad propia).
+
+### 2026-08-10 — resumenes_dia.dia es TIMESTAMP, no DATE (fricción de query)
+SÍNTOMA: `WHERE dia = '2026-07-20'` devuelve 0 filas aunque existe. CAUSA: guarda timestamp con hora;
+la igualdad compara contra 'X 00:00:00+00'. DECISIÓN: convivir, filtrar por RANGO. NO migrar tipo
+(riesgo > beneficio sobre tabla viva). Anotado para no rediagnosticar "no rows" que sí existen.
 
 ### 2026-08-09 — El gate verbatim agrupa HECHO + ENCUADRE cuando comparten suceso
 SÍNTOMA (medido, leído a ojo sobre material real): en el día 07-21 del clúster de la presidencia
@@ -1686,6 +1737,31 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
+
+### 2026-08-10 — Digest de arco (resumen general de la historia, NO confundir con lo retirado)
+Distinto de la corroboración-por-clúster que se RETIRÓ esta sesión. IDEA: una síntesis DE LAS
+síntesis diarias — dado el hilo cronológico de días, contar cómo evolucionó la historia. Barato
+(input = las síntesis ya generadas, no cuerpos completos), no reintroduce F5 (el material de entrada
+ya está desambiguado por día), y resuelve el problema del TÍTULO OBSOLETO (el título correcto de una
+historia que mutó no existe como titular de ningún artículo — sale del arco). Pendiente de diseñar
+como unidad propia.
+
+### 2026-08-10 — Difusión de Trama (carpeta /difusion, no "comercial")
+Deseo: que Trama sea conocida y útil para el periodismo colombiano, sin foco en monetizar. Canal
+inicial recomendado: X sobre TikTok (la audiencia inicial —periodistas, verificadores, academia—
+vive en X). El mejor activo de difusión NO es un plan sino un CASO DEMOSTRADO: el 07-20 (presidencia
+del Senado) donde el pipeline separó "el PH votó por Henríquez" (hecho, 4 medios verbatim) de
+"alianza inédita" (encuadre que el actor niega) — eso ES el pitch. PREREQUISITO antes de invitar
+gente: cerrar la deuda de TÍTULOS OBSOLETOS (mala primera impresión). Pendiente de definir
+destinatario (credibilidad institucional vs usuarios directos vs visibilidad amplia) antes de
+escribir el doc. Abrir como sesión propia con carpeta /difusion.
+
+### 2026-08-10 — Congelar clustering durante ventanas de validación manual
+La condición de carrera crawler↔validación hace que cualquier sid de prueba pueda migrar a mitad de
+una validación. IDEA: interruptor para pausar el cron de re-clustering (no la captura) durante una
+ventana, o disparar validaciones justo tras un ciclo de 6h para ~6h de sid estable. Mientras la
+validación sea manual y esporádica, la disciplina de "leer el resultado antes del próximo ciclo"
+alcanza. No es tarea.
 
 ### 2026-08-09 — Congelar crawler durante ventanas de validación manual
 La condición de carrera crawler↔validación (ver Operaciones sobre datos) hace que cualquier sid de
