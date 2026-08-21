@@ -24,7 +24,7 @@ import hashlib
 import argparse
 import unicodedata
 from collections import defaultdict
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from itertools import combinations
 from zoneinfo import ZoneInfo
 
@@ -630,6 +630,159 @@ def guardar_resumen_dia(fila):
 
 
 # =======================================================================
+# Análisis de una historia completa (pares + días) — compartido por main()
+# (sid único) y backfill_activas (muchas historias).
+# =======================================================================
+
+def analizar_story(story_id, articulos, verbose=True):
+    """Cuerpo de análisis de UNA historia: comparación por par (ventana-día) +
+    síntesis/corroboración por día. Devuelve contadores en vez de imprimir el banner
+    final: el llamador (main() o backfill_activas) decide cómo reportar. Con
+    verbose=False se silencian los prints por-par y por-día (backfill corre sobre
+    decenas de historias y no puede inundar el log con el detalle de cada una);
+    con verbose=True (sid único) el output es idéntico al de antes del refactor."""
+    comparables = filtrar_comparables(articulos)
+    if verbose:
+        print(f"Story {story_id}: {len(articulos)} artículos, {len(comparables)} comparables (tipo=noticia)")
+
+    pares_guardados = pares_skip = fallidos = 0
+
+    # Un ítem malo (JSON irrecuperable, red caída a mitad de corrida, lo que sea) no
+    # puede tumbar el resto del análisis: se registra el fallo y se sigue con el
+    # próximo par/clúster.
+    pares = list(pares_por_ventana(comparables))
+    if verbose:
+        print(f"Pares a evaluar (ventana-día + colapso): {len(pares)} "
+              f"(exhaustivo habría sido {len(comparables)*(len(comparables)-1)//2})")
+
+    for x, y in pares:
+        etq = f"{x['medio_slug']}×{y['medio_slug']} {x['hash_sha256'][:6]}/{y['hash_sha256'][:6]}"
+        try:
+            resultado = analizar_par(x, y)
+        except Exception as e:
+            fallidos += 1
+            if verbose:
+                print(f"  par {etq} — FALLO: {e}")
+                if isinstance(e, ErrorParseoJSON):
+                    print(f"    crudo: {e.crudo[:300]!r}")
+            continue
+        if resultado is None:
+            pares_skip += 1
+            if verbose:
+                print(f"  par {etq} — skip (caché, mismo hash o mismo medio)")
+            continue
+        guardar_comparacion(resultado)
+        pares_guardados += 1
+        if verbose:
+            print(f"  par {etq} — guardado")
+
+    # Síntesis + corroboración por día (digest cronológico + hechos corroborados por
+    # ventana). Idempotente por dia_key: re-correr salta los días ya hechos.
+    dia_guardados = dia_skip = dia_adopt = 0
+    try:
+        g_dia, s_dia, a_dia, f_dia = procesar_dia(story_id, articulos)
+        dia_guardados, dia_skip, dia_adopt = g_dia, s_dia, a_dia
+        fallidos += f_dia
+        if verbose:
+            print(f"resúmenes por día — {g_dia} guardados, {s_dia} skip (caché), {a_dia} adoptados, {f_dia} fallidos")
+    except Exception as e:
+        fallidos += 1
+        if verbose:
+            print(f"  resúmenes por día — FALLO: {e}")
+            if isinstance(e, ErrorParseoJSON):
+                print(f"    crudo: {e.crudo[:300]!r}")
+
+    return {
+        "pares_guardados": pares_guardados,
+        "pares_skip": pares_skip,
+        "dia_guardados": dia_guardados,
+        "dia_skip": dia_skip,
+        "dia_adopt": dia_adopt,
+        "fallidos": fallidos,
+    }
+
+
+# =======================================================================
+# Backfill sobre historias activas (muchas historias, una corrida acotada en tiempo)
+# =======================================================================
+
+def _historias_activas(horas=72):
+    """Story_ids con actividad reciente (fecha_captura de algún artículo dentro de
+    las últimas `horas`), para que el backfill priorice lo que se está moviendo
+    ahora. Orden: más recientes primero: a igual recencia, las historias con más
+    notas tipo=noticia (más señal para corroborar/sintetizar).
+
+    Trae solo las filas de story_articles cuyo artículo cae dentro de la ventana
+    (join !inner + gte) y agrega en Python — evita traer el historial completo de
+    story_articles solo para descartarlo. Pagina en bloques de 1000 (patrón del
+    módulo: un .select() sin paginar se trunca en silencio)."""
+    corte = (datetime.now(timezone.utc) - timedelta(hours=horas)).isoformat()
+    stats = {}  # story_id -> [max_fecha_captura, count_noticia]
+    desde = 0
+    while True:
+        pagina = (sb.table("story_articles")
+                  .select("story_id, articles!inner(fecha_captura, tipo)")
+                  .gte("articles.fecha_captura", corte)
+                  .range(desde, desde + 999).execute().data)
+        if not pagina:
+            break
+        for fila in pagina:
+            sid = fila["story_id"]
+            art = fila.get("articles") or {}
+            fecha = art.get("fecha_captura") or ""
+            actual = stats.setdefault(sid, ["", 0])
+            if fecha > actual[0]:
+                actual[0] = fecha
+            if art.get("tipo") == "noticia":
+                actual[1] += 1
+        if len(pagina) < 1000:
+            break
+        desde += 1000
+
+    ordenados = sorted(stats.items(), key=lambda kv: (kv[1][0], kv[1][1]), reverse=True)
+    return [sid for sid, _ in ordenados]
+
+
+def backfill_activas(presupuesto_seg=19800, horas=72):
+    """Corre analizar_story sobre todas las historias activas (últimas `horas`),
+    con verbose=False (una línea de resumen por historia, no el detalle por-par/
+    por-día). Presupuesto de tiempo con time.monotonic(): si se agota a mitad de
+    la lista, corta limpio — no hay estado que perder, el caché por hash hace que
+    la próxima corrida no repita el trabajo ya guardado. Cada historia en su
+    propio try/except: una que revienta no mata el resto del backfill."""
+    inicio = time.monotonic()
+    sids = _historias_activas(horas=horas)
+    n = len(sids)
+    print(f"[fase3-backfill] {n} historias activas (últimas {horas}h)")
+
+    hechas = saltadas_tiempo = falladas = 0
+    total_dia_guardados = total_dia_adopt = 0
+
+    for i, sid in enumerate(sids, 1):
+        if time.monotonic() - inicio > presupuesto_seg:
+            saltadas_tiempo = n - i + 1
+            print(f"[fase3-backfill] presupuesto agotado: {saltadas_tiempo} historias sin "
+                  f"procesar, se retoman en la próxima corrida")
+            break
+        try:
+            articulos = cargar_story_y_articulos(sid)
+            c = analizar_story(sid, articulos, verbose=False)
+            hechas += 1
+            total_dia_guardados += c["dia_guardados"]
+            total_dia_adopt += c["dia_adopt"]
+            print(f"  [{i}/{n}] {sid} — {c['dia_guardados']}d guardados, {c['dia_skip']}d skip, "
+                  f"{c['dia_adopt']}d adopt, {c['fallidos']}f fallidos")
+        except Exception as e:
+            falladas += 1
+            print(f"  [{i}/{n}] {sid} — FALLO: {e}")
+            continue
+
+    print(f"[fase3-backfill] {hechas} historias procesadas, {saltadas_tiempo} saltadas por "
+          f"tiempo, {falladas} falladas — {total_dia_guardados} días guardados, "
+          f"{total_dia_adopt} días adoptados")
+
+
+# =======================================================================
 # Prueba manual sobre UN story_id (NO backfill, NO cron)
 # =======================================================================
 
@@ -651,59 +804,38 @@ def cargar_story_y_articulos(story_id):
     return articulos
 
 
-def main():
+def main(story_id):
+    articulos = cargar_story_y_articulos(story_id)
+    contadores = analizar_story(story_id, articulos, verbose=True)
+    print(f"\n{'='*40}\n"
+          f"Guardados: {contadores['pares_guardados']} | "
+          f"Skip: {contadores['pares_skip']} | "
+          f"Fallidos: {contadores['fallidos']}\n{'='*40}")
+
+
+def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Fase 3: análisis de comparación/resumen sobre UN story_id (prueba manual).")
-    parser.add_argument("story_id", help="UUID de la story a analizar")
+        description="Fase 3: análisis de comparación/resumen sobre UN story_id, "
+                     "o --backfill sobre las historias activas recientes.")
+    parser.add_argument("story_id", nargs="?", help="UUID de la story a analizar")
+    parser.add_argument("--backfill", action="store_true",
+                         help="Corre sobre historias activas en vez de un story_id puntual")
+    parser.add_argument("--horas", type=int, default=72,
+                         help="Ventana de actividad para --backfill, en horas (default 72)")
+    parser.add_argument("--presupuesto", type=int, default=19800,
+                         help="Presupuesto de tiempo para --backfill, en segundos (default 19800)")
     args = parser.parse_args()
 
-    articulos = cargar_story_y_articulos(args.story_id)
-    comparables = filtrar_comparables(articulos)
-    print(f"Story {args.story_id}: {len(articulos)} artículos, {len(comparables)} comparables (tipo=noticia)")
-
-    guardados = saltados = fallidos = 0
-
-    # Un ítem malo (JSON irrecuperable, red caída a mitad de corrida, lo que sea) no
-    # puede tumbar el resto del análisis: se registra el fallo y se sigue con el
-    # próximo par/clúster. El backfill real correrá sobre miles de pares; un solo
-    # crash no puede volver a correr todo desde cero.
-    pares = list(pares_por_ventana(comparables))
-    print(f"Pares a evaluar (ventana-día + colapso): {len(pares)} "
-          f"(exhaustivo habría sido {len(comparables)*(len(comparables)-1)//2})")
-
-    for x, y in pares:
-        etq = f"{x['medio_slug']}×{y['medio_slug']} {x['hash_sha256'][:6]}/{y['hash_sha256'][:6]}"
-        try:
-            resultado = analizar_par(x, y)
-        except Exception as e:
-            fallidos += 1
-            print(f"  par {etq} — FALLO: {e}")
-            if isinstance(e, ErrorParseoJSON):
-                print(f"    crudo: {e.crudo[:300]!r}")
-            continue
-        if resultado is None:
-            saltados += 1
-            print(f"  par {etq} — skip (caché, mismo hash o mismo medio)")
-            continue
-        guardar_comparacion(resultado)
-        guardados += 1
-        print(f"  par {etq} — guardado")
-
-    # Síntesis + corroboración por día (digest cronológico + hechos corroborados por ventana).
-    # Idempotente por dia_key: re-correr salta los días ya hechos. Reemplaza la corroboración
-    # + síntesis por clúster (retirada).
-    try:
-        g_dia, s_dia, a_dia, f_dia = procesar_dia(args.story_id, articulos)
-        fallidos += f_dia
-        print(f"resúmenes por día — {g_dia} guardados, {s_dia} skip (caché), {a_dia} adoptados, {f_dia} fallidos")
-    except Exception as e:
-        fallidos += 1
-        print(f"  resúmenes por día — FALLO: {e}")
-        if isinstance(e, ErrorParseoJSON):
-            print(f"    crudo: {e.crudo[:300]!r}")
-
-    print(f"\n{'='*40}\nGuardados: {guardados} | Skip: {saltados} | Fallidos: {fallidos}\n{'='*40}")
+    if args.backfill and args.story_id:
+        parser.error("--backfill no acepta story_id (son modos mutuamente excluyentes)")
+    if not args.backfill and not args.story_id:
+        parser.error("falta story_id (o pasa --backfill)")
+    return args
 
 
 if __name__ == "__main__":
-    main()
+    args = _parse_args()
+    if args.backfill:
+        backfill_activas(presupuesto_seg=args.presupuesto, horas=args.horas)
+    else:
+        main(args.story_id)
