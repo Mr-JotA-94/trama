@@ -32,17 +32,23 @@ import requests
 from dotenv import load_dotenv
 from supabase import create_client
 
-load_dotenv()
+load_dotenv(override=True)
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-DEEPINFRA_API_KEY = os.environ["DEEPINFRA_API_KEY"]
-DEEPINFRA_BASE_URL = os.environ.get("DEEPINFRA_BASE_URL", "https://api.deepinfra.com/v1/openai")
+# Proveedor LLM vía OpenRouter (capa de acceso a GLM-5.2 con routing multi-proveedor).
+# En Actions, OPENROUTER_API_KEY viene de Secrets; en local, del .env.
+LLM_API_KEY = os.environ["OPENROUTER_API_KEY"]
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# --- Config del modelo (fija, no parametrizable por ahora) ---
-MODELO = "zai-org/GLM-5.2"
+# --- Config del modelo ---
+MODELO = "z-ai/glm-5.2"   # slug de OpenRouter (NO "zai-org/GLM-5.2", que es el de DeepInfra directo)
+# Routing forense: DeepInfra (proveedor del bake-off original) preferido; Cloudflare y Baidu
+# como failover validados (2026-08-11, forense-equivalentes). allow_fallbacks=False: si estos
+# tres caen, falla limpio en vez de rutear a un backend no validado (varianza forense no controlada).
+LLM_PROVIDER = {"order": ["deepinfra", "cloudflare", "baidu"], "allow_fallbacks": False}
 TEMPERATURA = 0.15
 MAX_TOKENS = 16000
 PROMPT_VERSION = "v2"   # v2: SYS_CORROBORA pasa de "máximo 5" (cuota) a techo-con-prioridad
@@ -188,9 +194,9 @@ def _llamar_llm_mensajes(mensajes):
     errores de red y HTTP 429 (transitorios). NO reintenta otros 4xx: un 400/401/422
     es un error del payload o las credenciales, y reintentarlo solo quema cupo sin
     arreglar nada."""
-    url = f"{DEEPINFRA_BASE_URL}/chat/completions"
+    url = f"{LLM_BASE_URL}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {DEEPINFRA_API_KEY}",
+        "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = {
@@ -198,6 +204,8 @@ def _llamar_llm_mensajes(mensajes):
         "temperature": TEMPERATURA,
         "max_tokens": MAX_TOKENS,
         "stream": False,
+        "reasoning": {"enabled": False},   # GLM-5.2 es de razonamiento; sin esto, content viene vacío
+        "provider": LLM_PROVIDER,           # routing forense DeepInfra→Cloudflare→Baidu
         "messages": mensajes,
     }
 
