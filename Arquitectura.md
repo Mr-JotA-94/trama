@@ -174,11 +174,15 @@ El producto dice "técnicas de persuasión detectadas", NO "sesgo cognitivo"
   credibilidad que diez falsos negativos.
 
 ### Implementación
-Proveedor **DeepInfra**, modelo `meta-llama/Llama-3.3-70B-Instruct`, temp 0.15, detrás de
-cliente swappable (base_url + api_key + model_id en config). NVIDIA NIM fallback; Groq
-deprecado (decomisión 2026-08-16). JSON estricto por prompt + validación/retry, no por
-extensión propietaria. **Corrige la decisión previa de 2026-06-19 (NIM primario) y §2.**
-**El modelo no es el cuello de botella: no cambiar de modelo buscando arreglar esto.**
+
+### Proveedor LLM de Fase 3 (actualizado 2026-08-22)
+GLM-5.2 se accede vía OpenRouter (capa multi-proveedor), NO DeepInfra directo. Decisión de
+resiliencia, no de costo: OpenRouter rutea alrededor de proveedores degradados. Routing forense
+explícito (DeepInfra preferido — el del bake-off original —, Cloudflare/Baidu como failover
+validados equivalentes, sin fallback libre) para preservar el comportamiento validado y no
+introducir varianza no controlada en el archivo. Requiere reasoning desactivado en el payload
+(GLM-5.2 es modelo de razonamiento). El bake-off original que eligió GLM-5.2 sigue vigente: cambió
+la capa de acceso, no el modelo.
 
 ### Fase 3 v1 — IMPLEMENTACIÓN (2026-07-29)
 Esquema: `comparaciones` (por par, cache-key = par de hashes ordenado) + `resumenes` (por

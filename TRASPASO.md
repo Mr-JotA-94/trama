@@ -1,8 +1,7 @@
 # TRASPASO — Estado volátil de Trama
-> Última actualización: 2026-08-09 (sesión ROBUSTEZ + CONSOLIDACIÓN FASE 3. Corroboración
-> por día VALIDADA en prod con lectura humana. Opción A —desacople resumenes_dia↔sid vía
-> adopción perezosa— IMPLEMENTADA Y VALIDADA (V3). Retirada la corroboración por clúster.
-> feat/indice-trama MERGEADO a prod.)
+> Última actualización: 2026-08-22 (sesión MIGRACIÓN A OPENROUTER + BACKFILL ACTIVO.
+> Fase 3 corre sobre OpenRouter (routing forense). Backfill de 68 historias activas
+> ejecutado y confirmado en datos. Listo para montar frontend de Fase 3 —bloque propio—.)
 > Autoridad: este archivo manda sobre memoria. Estado volátil vive AQUÍ.
 
 ## Quién soy y cómo trabajamos
@@ -10,142 +9,105 @@ Soy Jota (Johan). Claude es "Claudio". Reglas que NO se pierden:
 - **Challenge-first:** cuestiona enfoques con fallas ANTES de construir.
 - **Declarar Tier (0–3) + load-bearing antes de construir.**
 - Directo, conciso, instructivo, en español. **Medir antes de arreglar.**
-- Diagnóstico con datos reales; scripts para correr en mi máquina. Claude Code solo para
-  CAMBIOS de código en repo, y NO ejecuta DDL contra Supabase (migraciones a mano).
+- Diagnóstico con datos reales. Claude Code solo para CAMBIOS de código; NO ejecuta DDL
+  (migraciones a mano en Supabase + espejo en /migrations).
 - **Un chat = UNA unidad de trabajo = un cierre.**
 - **Flujo git:** branch antes de tocar código. Commits de doc SEPARADOS de los de código.
-- Los diag_*.py y sus .md de salida son desechables y NO se commitean.
+  `git status` ANTES de cambiar de rama (mordió 3 veces por docs sin commitear viajando).
+- Los diag_*.py / smoke_*.py son desechables y NO se commitean.
 - **Umbral de éxito se fija ANTES de correr.**
-- **Ningún % corona una feature sin LEER material real** (2026-07-20).
-- **El error del modelo se DESPLAZA, no se reduce, cuando redacta** (2026-07-21).
-- **El verificador mecánico ordena; la fidelidad la juzga el ojo humano.** El substring valida
-  procedencia, NO relación causal ni equivalencia semántica.
-- **Un ítem malo no tumba el batch:** try/except por ítem + retry.
-- **El instrumento de medición también se valida.** REFORZADO 2026-08-09: mis propios patrones de
-  grep de verificación también son instrumento — `_prompt_usuario_` sin \b matcheaba una función
-  viva; el word-boundary importa.
-- **Antes de culpar al código, descartar el entorno.** REFORZADO 2026-08-09: DeepInfra devolvió
-  body vacío ('') transitorio; re-correr (idempotencia) lo distinguió de fallo determinista.
-- **[2026-08-01] Trocear por DÍA mata la deriva causal por construcción.**
-- **[2026-08-01] Techo, NO cuota.** "Hasta N, priorizado por fuerza, menos si corresponde."
-- **[2026-08-01] Ver el crudo ANTES de fijar el fix.** REAFIRMADO 2026-08-09: el fallo del día
-  denso PARECÍA max_tokens y era TIMEOUT; leer el mensaje del error lo cantó. Subir max_tokens no
-  habría arreglado nada.
-- **[2026-08-08] Sobre-split < sub-split.** No afinar la resolución de Louvain al ver un
-  sobre-split: reabre la calibración entera, es otra unidad.
-- **[2026-08-08] La hermandad es verdad mecánica (mismo componente union-find), no umbral.**
-- **[2026-08-08] git status como paso del CIERRE.** MORDIÓ DE NUEVO 2026-08-09: docs de gobernanza
-  (TRASPASO/BITACORA/Arquitectura) viajaron modificados-sin-commitear entre ramas. Commit de doc
-  ANTES de cambiar de rama o borrar ramas.
-- **[2026-08-08] El doc de arquitectura puede mentir sobre lo que el código EXPONE.** Confirmar en
-  código/prod real. CASO VIVIDO 2026-08-09: "en mi mente indice-trama ya estaba en producción" —
-  y estaba en rama sin mergear. `git branch --merged main` es la verdad, no la memoria.
-- **[2026-08-09] El clustering NO es incremental: re-particiona el corpus entero cada corrida.**
-  Una historia puede GANAR/PERDER artículos de días ya no capturados porque el IDF global se
-  recalibra con el corpus nuevo. NO es "encaje forzado": es corrección de membresía. Verificar
-  leyendo material (títulos + urls_unicos), no por intuición. Que las historias "respiren" es la
-  propiedad que permite corregir errores tempranos de agrupamiento.
-- **[2026-08-09] Condición de carrera crawler↔validación manual.** El uuid_estable = uuid5 del
-  artículo más antiguo; si el clustering corre durante una validación manual, el sid puede
-  recalcularse, `stories` borra el viejo y (antes de Opción A) el CASCADE se llevaba resumenes_dia.
-  Síntoma vivido: "log dice guardado, la tabla da 0". Para sid estable: congelar crawler durante la
-  ventana, o leer el resultado antes del próximo ciclo de 6h. (El crawler NUNCA se congeló esta
-  sesión; el sid migró 6678516b→5147e4cd a mitad de validación.)
-- **[2026-08-09] resumenes_dia es DERIVADO y regenerable, NO archivo inmutable.** La regla
-  "fila nueva, nunca UPDATE" aplica a `articles` (evidencia forense), no al análisis. Un día se
-  re-analiza SII su dia_key cambia; al cambiar, la versión previa se RETIRA (no se acumula).
-
-## Quién soy / qué es Trama
-Jota (Johan), dev único. Trama: hemeroteca forense de medios colombianos. Prod:
-trama-co.vercel.app. Claude = "Claudio".
+- **Ningún % corona una feature sin LEER material real** (2026-07-20; reafirmado en backfill 08-22:
+  el conteo del log no basta, se confirma en tabla y se lee una muestra a ojo).
+- **El instrumento de medición también se valida** (incluye mis propios patrones de grep/query).
+- **Antes de culpar al código, descartar el entorno.** (DeepInfra degradado ≠ bug propio;
+  key fantasma del entorno de Windows ≠ .env mal.)
+- **Ver el crudo ANTES de fijar el fix.** La hipótesis equivocada lleva al parche equivocado.
+- **[2026-08-09] Trocear por DÍA mata la deriva causal. Techo NO cuota. resumenes_dia es
+  DERIVADO regenerable, NO archivo inmutable** (la inmutabilidad es de `articles`).
+- **[2026-08-09] El clustering NO es incremental: re-particiona todo el corpus cada corrida.**
+  Una historia gana/pierde artículos viejos al recalibrarse el IDF global. Verificar leyendo
+  material, no por intuición.
+- **[2026-08-09] Condición de carrera crawler↔validación manual.** El uuid5 (story_id) migra al
+  recomponerse el clúster. Para sid estable: congelar crawler o leer resultado antes del ciclo 6h.
+- **[2026-08-11] Fallo transitorio del proveedor ≠ fallo determinista del input.** Re-correr
+  (idempotencia) distingue uno de otro antes de tocar código.
+- **[2026-08-22] Un smoke/diag verde valida LÓGICA, no INTEGRACIÓN.** Que el diag funcione no
+  prueba que el módulo integrado corra en Actions; eso se valida con un run real, post-merge si
+  hace falta, con el primer run supervisado como gate.
+- **[2026-08-22] Workflow con workflow_dispatch solo aparece en Actions si está en la rama
+  default (main).** Merge del YAML a main antes de poder dispararlo.
 
 ## Stack
-Crawler Python en GitHub Actions cada 6h → Supabase (Postgres + pgvector) → Next.js 14 en
-Vercel. Monorepo Mr-JotA-94/trama (/crawler, /web, /supabase/migrations).
-**LLM Fase 3: zai-org/GLM-5.2 (DeepInfra) — SELLADO. temp 0.15, max_tokens 16000.**
-**TIMEOUT_TOTAL = 300** (subido de 120 el 2026-08-09: la corroboración de días densos —4+ medios
-sobre evento masivo— rebasa 120s de generación. NO era max_tokens: era TIEMPO. En main, validado.)
-**PROMPT_VERSION = v2.** Filas v1 viejas coexisten en `comparaciones` (237 v1 / resto v2).
-**ENTORNO PROD = GitHub Actions (Linux x86_64).** El pipeline LLM vive AHÍ.
-**ENTORNO LOCAL = Windows ARM64 + Python 3.14 — hostil.** Bug SSL 3.14 corrompe respuestas
-LARGAS. NO validar corroboración por día en local. (Terminal local = CMD/PowerShell: no hay
-`grep`/`gh` salvo que se instalen; usar `findstr`/`Select-String`, o la web de Actions.)
+Crawler Python (GitHub Actions cada 6h) → Supabase (Postgres + pgvector) → Next.js 14 en Vercel.
+Monorepo Mr-JotA-94/trama (/crawler, /web, /supabase/migrations).
+**LLM Fase 3: GLM-5.2 vía OPENROUTER (migrado 2026-08-22 de DeepInfra directo).**
+- Slug modelo: `z-ai/glm-5.2` (OpenRouter), NO `zai-org/GLM-5.2` (era el de DeepInfra directo).
+- Endpoint: `https://openrouter.ai/api/v1`. Key: `OPENROUTER_API_KEY` (.env local con
+  load_dotenv(override=True); Secret en Actions).
+- **Payload OBLIGATORIO: `reasoning:{enabled:False}`** (GLM-5.2 es de razonamiento; sin esto
+  `content` viene vacío y cobra tokens de pensamiento).
+- **Provider routing forense: `{"order":["deepinfra","cloudflare","baidu"],"allow_fallbacks":False}`**
+  DeepInfra preferido (proveedor del bake-off original); Cloudflare/Baidu failover validados
+  forense-equivalentes (diag 08-11). allow_fallbacks=False: si los 3 caen, falla limpio en vez de
+  rutear a backend no validado (varianza forense no controlada).
+- temp 0.15, max_tokens 16000, TIMEOUT_TOTAL 300, PROMPT_VERSION v2.
+**ENTORNO PROD = GitHub Actions (Linux x86_64).** LOCAL = Windows ARM64 + Python 3.14, hostil
+para respuestas LARGAS (bug SSL 3.14). NO validar corroboración en local. Terminal local:
+CMD/PowerShell, no hay grep/gh nativos (usar findstr/Select-String o la web).
 
-## Banco: 7 medios. Corpus ~11962 filas / crece ~1000/día.
+## Banco: 7 medios. Corpus ~12k artículos / crece ~1000/día.
 
 ## DÓNDE ESTAMOS
 
-**Fase 1 COMPLETA. Fase 2 EN PRODUCCIÓN + LOUVAIN BEAT-SPLIT** (clustering + feed + grafo, CI 6h).
-Louvain: componentes >50 → louvain_communities (res 1.6, seed 42), determinista. Arista
-`misma_trama` en story_relations.
+**Fase 1 COMPLETA. Fase 2 EN PRODUCCIÓN + Louvain beat-split** (res 1.6, seed 42; arista
+misma_trama para hermanas). **Frontend "De la misma trama" MERGEADO / en prod.**
 
-**FRONTEND "DE LA MISMA TRAMA": MERGEADO A MAIN / EN PRODUCCIÓN (2026-08-09).** Índice cronológico
-de sub-hechos hermanos. Ya no está en rama; confirmado con `git branch --merged`.
+**Fase 3 — pipeline inter-medio. TODO EN PRODUCCIÓN:**
+- COMPARACIÓN por par: validada.
+- SÍNTESIS + CORROBORACIÓN POR DÍA: validadas, leídas a ojo, calidad confirmada.
+- Robustez por-día (try/except por día + `pasada`), TIMEOUT_TOTAL=300, desacople
+  resumenes_dia↔sid con ADOPCIÓN PEREZOSA (Opción A), fix un-análisis-por-día (DELETE
+  post-insert): TODO mergeado y validado, incluido a escala en el backfill.
+- Corroboración por clúster (vieja): RETIRADA. Tabla `resumenes` huérfana, a DROPear en
+  migración futura si nada la extraña.
+- **Proveedor: OpenRouter (migrado y validado en producción 08-22).**
 
-**Fase 3 — pipeline inter-medio. Estado por carril:**
-- **COMPARACIÓN (por par): validada y en producción.**
-- **SÍNTESIS POR DÍA: EN PRODUCCIÓN.**
-- **CORROBORACIÓN POR DÍA: VALIDADA EN PRODUCCIÓN (2026-08-09).** Robustez por-día + timeout=300
-  probados sobre el día más denso del corpus (presidencia del Senado, 37-38 notas/4 medios).
-  Calidad leída a ojo: hechos duros (56 vs 45 votos, revés a De La Espriella, coalición PH como
-  acción) separados de encuadres en solo_un_medio. DEUDA conocida (BITACORA): el gate agrupa
-  hecho+encuadre cuando comparten suceso; desempeño variable por día. No bloqueante.
-- **CORROBORACIÓN POR CLÚSTER (`analizar_cluster` / tabla `resumenes`): RETIRADA (2026-08-09).**
-  Código borrado del módulo (rama chore/retirar-corroboracion-cluster, mergeada). La TABLA
-  `resumenes` queda huérfana a propósito: DROP en migración aparte en unas semanas si nada la
-  extraña (código es reversible por git; DROP no).
-
-**OPCIÓN A — DESACOPLE resumenes_dia↔sid: IMPLEMENTADA Y VALIDADA (2026-08-09).**
-Migración 000018: FK story_id CASCADE→SET NULL + story_id nullable. `dia_ya_existe` devuelve fila
-(no bool); `procesar_dia` ADOPTA (UPDATE story_id, cero LLM) los días huérfanos/migrados de
-composición intacta, en vez de regenerarlos. Devuelve 4-tupla (guardados, saltados, adoptados,
-fallidos). V3 validado en Actions: línea `día 2026-07-17 — adoptado (sid previo obsoleto)` con 0
-llamadas LLM. Cobertura parcial: el camino "story_id distinto pero NO NULL" no se ejercitó
-(mismo if, riesgo bajo).
-
-**FIX un-análisis-por-día (2026-08-09):** `guardar_resumen_dia` hace DELETE post-insert de
-versiones previas del mismo (story_id, dia), EXCEPTO la recién creada (neq id). Insert primero: si
-falla, la versión vieja sobrevive en vez de perderse el día. Resuelve los duplicados por día que
-aparecen cuando la composición de un día cambia (dia_key nuevo coexistía con el viejo).
+**BACKFILL ACTIVO — EJECUTADO Y CONFIRMADO (2026-08-22):**
+- Workflow `fase3_backfill.yml` (manual, workflow_dispatch, inputs horas/presupuesto, SIN cron).
+- Modo `--backfill` en analisis_fase3.py: `_historias_activas(72h)` ordenadas por recencia×cobertura,
+  bucle con corte por tiempo (time.monotonic vs presupuesto, chequeo ENTRE historias), try/except
+  por historia. Reanudable por idempotencia (dia_key), sin cursor persistente.
+- Resultado: 68 historias activas / 128 días guardados en una corrida, 0 falladas, corte por
+  tiempo validado (run de prueba 600s cortó limpio en 8 historias).
+- CONFIRMADO EN TABLA: 69 historias, 166 días, 0 duplicados, histograma de hechos con spread
+  (0-9), síntesis leídas a ojo = buenas. 73/76 días-con-0-hechos son n_medios=1 (correcto por
+  diseño); solo 3 con n_medios=2 y 0 hechos (ruido despreciable, 1.8%).
+- 9 filas huérfanas (story_id NULL) por migración de sid durante el run — esperado (SET NULL las
+  preservó), se adoptan en próxima corrida.
 
 **ESQUEMA:**
-- `comparaciones` (por par): hash_a/b, sin story_id. Sobrevive a cualquier re-split.
-- `resumenes` (por clúster): HUÉRFANA, a DROPEAR en migración futura.
-- `resumenes_dia` (por día): dia_key UNIQUE, story_id (FK **ON DELETE SET NULL**, nullable),
-  sintesis, hechos_corroborados/solo_un_medio jsonb. **`dia` es TIMESTAMP con hora, NO date:**
-  filtrar por RANGO (`>= 'X' AND < 'X+1'`), la igualdad `dia = 'X'` NO matchea.
-- `story_relations` + columna `tipo` ('tematica'|'misma_trama'). Migración 000017.
-- **Migración 000018** aplicada a mano + espejada: CASCADE→SET NULL en resumenes_dia.
-
-**MÓDULO crawler/analisis_fase3.py — estado tras esta sesión:**
-- `procesar_dia`: try/except por día + `pasada` + adopción perezosa. Devuelve 4-tupla.
-- `guardar_resumen_dia`: DELETE post-insert (un análisis vigente por día).
-- `TIMEOUT_TOTAL=300`.
-- BORRADO: analizar_cluster, cluster_key_de, cluster_ya_existe, guardar_resumen, SYS_SINTESIS,
-  _verificar_sintesis_parcial (+ regex), _prompt_usuario_corrobora, _prompt_usuario_sintesis.
-- CONSERVADO (crítico): SYS_CORROBORA (compartido con _corroborar_dia), SYS_COMPARACION,
-  analizar_par, todo el carril por día.
-- VERIFICAR pendiente (no bloqueante): si `_un_articulo_por_medio` quedó huérfano tras el retiro
-  (lo usaba analizar_cluster). Inofensivo; limpiar en próxima pasada si no tiene otro llamador.
+- comparaciones (por par): hash_a/b, sin story_id.
+- resumenes (por clúster): HUÉRFANA, a DROPear.
+- resumenes_dia: dia_key UNIQUE, story_id FK **ON DELETE SET NULL** (migración 000018), nullable.
+  `dia` es TIMESTAMP (filtrar por RANGO, no igualdad). Un análisis vigente por (story_id,dia).
+- story_relations + tipo ('tematica'|'misma_trama').
 
 ## PRÓXIMO PASO cuando retomemos
-1. **[SIGUIENTE UNIDAD] Backfill reanudable.** ~8.4h de trabajo LLM > límite 6h de Actions → hay
-   que chunkear con corte por tiempo + reanudabilidad. Ya hay media solución: idempotencia por
-   dia_key + caché por hash_a/hash_b = re-run salta lo hecho. Falta: control de tiempo (cortar
-   limpio antes del límite) y ORDEN de procesamiento (prioridad: recientes × cobertura n_medios;
-   historias de 2 artículos AL FINAL). Es unidad grande, chat propio.
-2. **Modelo de costos DeepInfra.** Variable que gobierna la factura recurrente: cuántos dia_key
-   cambian por ciclo de clustering (query a medir). Costo NO es acumulativo — proporcional al
-   delta de composición, decae al estabilizarse el corpus. Backfill = pico único; estado estable =
-   proporcional al flujo diario. Unidad propia con queries reales.
-3. **Enganche de Fase 3 al cron** — DESPUÉS del clustering, mismo workflow, Python 3.12. Depende de
-   1 y 2. Es la corona, y su propia mini-saga.
-4. DROP de tabla `resumenes` (migración) cuando pasen semanas sin extrañarla.
+1. **[BLOQUE PROPIO, chat nuevo] Frontend de Fase 3.** Surface la corroboración/síntesis por día
+   en /historia/[id]. Arranca con BRAINSTORM de ideas. EXPECTATIVA CORRECTA: hay datos ricos para
+   las ~68 historias ACTIVAS; el histórico (~750) aún sin procesar → frontend muestra lo activo,
+   histórico vendrá después. Incluye resolver el problema del TÍTULO OBSOLETO (sale de la síntesis
+   del día más reciente, no del titular de un artículo).
+2. **Backfill HISTÓRICO completo (Objetivo B):** las ~750 historias inactivas, de grande a chica.
+   Requiere extender backfill_activas a un modo histórico. Correr supervisado o con presupuesto
+   grande. Costo estimado ~$25-35 total (memoria).
+3. **Enganche al cron:** Fase 3 automática tras el clustering, mismo workflow. Con OpenRouter ya
+   resuelto como proveedor + failover, el riesgo de disponibilidad baja. Su propia mini-saga.
+4. DROP tabla `resumenes` (migración) cuando pasen semanas sin extrañarla.
+5. Limpieza periódica de huérfanas permanentes (story_id NULL viejas nunca re-adoptadas).
 
-## Cómo verificar (queries de esta sesión)
-- Densidad por historia (elegir banco): CTE por_dia, max(arts_dia) pico + max medios. Unir
-  articles→outlets por outlet_id (el medio es outlets.slug, NO columna de articles).
-- Canario de huérfanas: `SELECT count(*) FILTER (WHERE story_id IS NULL) FROM resumenes_dia;`
-- Duplicados por día: `... GROUP BY story_id, dia HAVING count(*) > 1;` (debe ser vacío tras el fix).
-- Leer resumenes_dia: filtrar `dia` por RANGO, no igualdad.
-- Distinguir transitorio vs determinista de DeepInfra: re-correr (idempotencia) y ver si entra.
+## Cómo verificar (queries de la sesión)
+- Estado resumenes_dia: count historias/días/huérfanas; duplicados (GROUP BY story_id,dia HAVING>1);
+  histograma de hechos; días-0-hechos por n_medios (para distinguir "1 medio = correcto" de deuda).
+- Densidad por historia: CTE por_dia con max(arts_dia) pico; unir articles→outlets (medio = slug).
+- Distinguir transitorio vs determinista de proveedor: re-correr (idempotencia).

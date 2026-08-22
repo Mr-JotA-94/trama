@@ -57,7 +57,32 @@ en común". Por eso la etapa NO fue aditiva pura: exigió un gate `.eq("tipo","t
 Jota confirmó que "Historias conectadas" sí muestra tarjetas en prod → la nota del doc era stale,
 no una decisión vigente (corrección llevada a Arquitectura).
 
-DECISIONES (no hipótesis).
+## DECISIONES (no hipótesis).
+
+### 2026-08-22 — Migración de Fase 3 a OpenRouter (proveedor LLM)
+MOTIVO: DeepInfra directo en "degraded performance" crónico (varios días), timeouts en
+corroboración densa bloqueaban el backfill. DECISIÓN: usar OpenRouter como capa de acceso a
+GLM-5.2 (mismo modelo/peso), con provider routing explícito. Validado antes de migrar (diag
+08-11): OpenRouter es forense-EQUIVALENTE a DeepInfra directo — misma calidad de corroboración
+entre DeepInfra, Cloudflare y Friendli sobre el día denso del Senado; ambos comparten la deuda
+conocida de agrupar encuadre 'alianza' con el hecho (NO es del proveedor, es del prompt/gate).
+CONFIG: slug `z-ai/glm-5.2`, `reasoning:{enabled:False}` (imprescindible: sin esto content vacío),
+provider `{order:[deepinfra,cloudflare,baidu], allow_fallbacks:False}`. Routing forense: DeepInfra
+preferido (bake-off original), Cloudflare/Baidu failover validados, fallback estricto apagado para
+no rutear a backend no validado. COSTO medido: ~$0.062/corroboración de día denso; backfill
+completo proyectado ~$25-35. Cambio quirúrgico en analisis_fase3.py: config + _llamar_llm_mensajes,
+sin tocar prompts/gate/lógica. Validado end-to-end en Actions (run 6678516b + backfill 68 historias).
+NOTA: no es ahorro (OpenRouter→DeepInfra cuesta igual + comisión), es RESILIENCIA.
+
+### 2026-08-22 — Backfill de historias activas implementado y ejecutado
+Modo `--backfill` en analisis_fase3.py: refactor previo extrajo analizar_story(sid, arts, verbose)
+del main (reusable por sid-único y backfill, con verbose para no inundar log). _historias_activas
+(72h, orden recencia×cobertura) + backfill_activas (corte por tiempo con monotonic, chequeo ENTRE
+historias, try/except por historia, reanudable por idempotencia sin cursor). Workflow
+fase3_backfill.yml manual (SIN cron). Validado: run de prueba 600s cortó limpio en 8 historias
+(corte por tiempo funciona); run completo procesó 68 historias / 128 días, 0 falladas. Confirmado
+en tabla: 69 historias, 166 días, 0 duplicados, calidad buena.
+
 - Gate temático en Q3 obligatorio (sin él, hermanas duplicadas). MEDIDO: en 5c39c972 (gabinete
   Abelardo) ninguno de los 12 títulos del arco aparece ya en "Historias conectadas".
 - Orden del arco: día-calendario Bogotá ASC (no timestamp crudo: eso ordena por qué medio publicó
@@ -474,6 +499,21 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 ---
 
 ## Deuda técnica conocida
+
+### 2026-08-22 — load_dotenv sin override lee credenciales fantasma del entorno (Windows local)
+analisis_fase3.py se cambió a load_dotenv(override=True) en la migración a OpenRouter. Pero
+crawler.py y otros módulos pueden seguir con load_dotenv() plano → en LOCAL, una variable de
+entorno de Windows (ej. una OPENROUTER_API_KEY vieja seteada con setx) PISA el .env silenciosamente.
+Vivido 08-22: el .env decía una key y el proceso usaba otra fantasma del entorno; síntoma "401 User
+not found" con key correcta en el archivo. En Actions es inofensivo (no hay .env, todo de Secrets).
+DEUDA: auditar otros módulos y pasar a override=True donde lean .env en local. Menor.
+
+### 2026-08-22 — Huérfanas permanentes en resumenes_dia (story_id NULL) — acumulación lenta
+El desacople (SET NULL) preserva filas cuando su sid migra, para adopción posterior. Pero un día
+cuya COMPOSICIÓN cambió (dia_key nuevo) deja la fila vieja huérfana para siempre (su dia_key nunca
+volverá a matchear). Tras el backfill quedaron 9. Invisibles al frontend (consulta por sid), pero
+se acumulan con cada re-clustering. DEUDA: limpieza periódica
+(DELETE WHERE story_id IS NULL AND created_at < now() - interval 'X days'). No urgente a este volumen.
 
 ### 2026-08-10 — [RESUELTA EN LA MISMA SESIÓN] Duplicados por día al cambiar composición
 Corrige y REEMPLAZA la predicción previa de "huérfanas permanentes" (que resultó FALSA: las filas de

@@ -365,6 +365,18 @@ def _dia_bogota(a):
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
+
+    # MEDIDO 2026-08-22: fecha_publicacion llega SIEMPRE como fecha SIN HORA,
+    # normalizada a medianoche UTC (15.064/15.064, 100% en los 7 medios).
+    # Convertir de zona una fecha que no tiene hora es un error de categoría:
+    # le resta el offset de Bogotá (-5h) y la corre al día ANTERIOR. Si no trae
+    # hora, la fecha ya ES el día declarado por el medio: se toma tal cual.
+    # El fallback a fecha_captura sí trae hora real y sigue convirtiéndose normal.
+    # Residual aceptado: una nota publicada exactamente a las 00:00:00.000000 UTC
+    # quedaría un día adelante. Frecuencia ~0; la alternativa fallaba el 100%.
+    en_utc = dt.astimezone(timezone.utc)
+    if (en_utc.hour, en_utc.minute, en_utc.second, en_utc.microsecond) == (0, 0, 0, 0):
+        return en_utc.date()
     return dt.astimezone(BOGOTA).date()
 
 
