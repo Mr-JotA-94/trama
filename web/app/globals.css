@@ -1367,4 +1367,16 @@ a.trama-titulo:hover { text-decoration: underline; text-decoration-color: var(--
 
   .hilo-separador-dia { gap: 8px; }
   .dia-boton { padding: 6px 10px; min-height: 34px; }
+
+  /* La cita, siempre debajo del medio, nunca al lado. Sin esto,
+     .hecho-citas-lista li (flex-wrap con min-width:220px en la cita)
+     queda al arbitrio del largo del nombre del medio y de la cita: a
+     veces entran juntos en la línea, a veces no — inconsistente entre
+     ítems de la misma lista (medido en captura real a 375px). */
+  .hecho-citas-lista li {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .hecho-cita-texto { min-width: 0; }
 }
