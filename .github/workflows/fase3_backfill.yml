@@ -1,0 +1,42 @@
+# .github/workflows/fase3_backfill.yml
+# Disparo MANUAL del backfill de Fase 3 sobre historias ACTIVAS (últimas N horas).
+# NO tiene cron a propósito: se corre supervisado hasta validar. El enganche
+# automático es otra unidad.
+name: fase3-backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      horas:
+        description: "Ventana de actividad en horas (default 72)"
+        required: false
+        default: "72"
+        type: string
+      presupuesto:
+        description: "Presupuesto de tiempo en segundos (default 19800 = 5.5h)"
+        required: false
+        default: "19800"
+        type: string
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350        # 5.83h — colchón sobre el presupuesto de 5.5h
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar deps mínimas de Fase 3
+        run: pip install requests python-dotenv supabase
+
+      - name: Correr backfill de historias activas
+        working-directory: crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: python analisis_fase3.py --backfill --horas "${{ inputs.horas }}" --presupuesto "${{ inputs.presupuesto }}"
