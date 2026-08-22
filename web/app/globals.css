@@ -482,12 +482,6 @@ a { color: inherit; }
    se reconozca en un paneo rápido; la marca ::before es un trazo corto, no el
    círculo de .hilo-nodo, para no confundirse con "editada" (que usa --hilo). */
 .hilo-separador-dia {
-  font-family: var(--f-ui), sans-serif;
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--tinta);
   padding: 18px 0 6px 8px;
   position: relative;
 }
@@ -1213,7 +1207,15 @@ a.trama-titulo:hover { text-decoration: underline; text-decoration-color: var(--
   gap: 12px;
   flex-wrap: wrap;
 }
-.hilo-separador-texto { flex-shrink: 0; }
+.hilo-separador-texto {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--tinta);
+  flex-shrink: 0;
+}
 
 .dia-boton {
   font-family: var(--f-mono), monospace;
