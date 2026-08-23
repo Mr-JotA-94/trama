@@ -482,12 +482,6 @@ a { color: inherit; }
    se reconozca en un paneo rápido; la marca ::before es un trazo corto, no el
    círculo de .hilo-nodo, para no confundirse con "editada" (que usa --hilo). */
 .hilo-separador-dia {
-  font-family: var(--f-ui), sans-serif;
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--tinta);
   padding: 18px 0 6px 8px;
   position: relative;
 }
@@ -983,4 +977,406 @@ a.trama-titulo:hover { text-decoration: underline; text-decoration-color: var(--
   .buscador-select,
   .buscador-input-corto,
   .buscador-input-fecha { width: 100%; }
+}
+
+/* =====================================================================
+   TRAMA — Fase 3 en el expediente de historia
+   PEGAR AL FINAL de web/app/globals.css, ANTES del bloque final
+   @media (max-width: 560px) — o dejarlo tal cual: este bloque trae su
+   propio @media al final y no depende del orden.
+
+   Dentro del sistema de diseño v1: esquinas rectas, bordes de 1px, cero
+   gradientes, cero sombras. Ninguna animación nueva (el hilo sigue siendo
+   la única del sitio).
+
+   USO DE TOKENS — decisión de esta unidad, declarada para que no parezca
+   arbitraria más adelante:
+   · --verificado (verde sobrio) marca LO CORROBORADO. El token nació
+     descrito como "confirmado en el clúster"; hechos_corroborados es
+     exactamente eso, así que se usa como fue diseñado.
+   · --resaltador (ámbar) marca lo de UN SOLO MEDIO. El token estaba
+     reservado para "las técnicas de persuasión", carril cerrado y medido
+     (Arquitectura §5): queda libre, y ámbar-como-cautela encaja con
+     material de menor corroboración. Reasignación consciente.
+   · --hilo (rojo) sigue siendo SOLO conexión y afordancias de despliegue.
+   ===================================================================== */
+
+/* ---- Lo último: estado actual del hecho, bajo el título --------------
+   Mitiga el título obsoleto. Cuelga del hilo como .captura y
+   .historia-item, para que se lea como parte del expediente y no como un
+   banner pegado encima. */
+.ultimo-bloque {
+  border-left: 3px solid var(--hilo);
+  padding: 10px 0 12px 16px;
+  margin: 18px 0 4px 4px;
+}
+.ultimo-label {
+  display: block;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--gris-archivo);
+  margin-bottom: 6px;
+}
+.ultimo-texto {
+  font-size: 1.05rem;
+  line-height: 1.55;
+  max-width: 640px;
+}
+
+/* ---- Nota de método (disclosure de IA) ------------------------------
+   Principio del proyecto, no adorno: no se publica un derivado de LLM sin
+   decir con qué se hizo. Se pinta discreta a propósito — tiene que estar
+   siempre, sin competir por la atención. */
+.metodo-nota {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--gris-archivo);
+  margin-top: 12px;
+  max-width: 620px;
+}
+.metodo-nota-compacta { margin-top: 8px; }
+
+/* ---- Alcance de sección y sub-encabezados --------------------------- */
+.seccion-alcance {
+  font-size: 0.88rem;
+  color: var(--gris-archivo);
+  line-height: 1.5;
+  margin-bottom: 16px;
+  max-width: 640px;
+}
+
+.sub-titulo {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--gris-archivo);
+  margin: 22px 0 8px;
+}
+
+.sub-nota {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--gris-archivo);
+  margin-bottom: 10px;
+  max-width: 620px;
+}
+
+/* ---- Hechos corroborados -------------------------------------------- */
+.hechos-lista { list-style: none; margin: 0; padding: 0; }
+
+.hecho {
+  border-left: 3px solid var(--verificado);
+  padding: 12px 0 12px 16px;
+  margin-left: 4px;
+}
+.hecho + .hecho { border-top: 1px dotted var(--gris-archivo); }
+
+/* El enunciado es SIEMPRE una cita literal de un medio, entre comillas.
+   Nunca voz de Trama: la tipografía de cuerpo (serif) refuerza que es
+   texto de un medio, no interfaz. */
+.hecho-enunciado {
+  font-size: 1rem;
+  line-height: 1.55;
+  max-width: 640px;
+}
+
+.hecho-medios {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.hecho-conteo {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--verificado);
+  font-weight: 600;
+}
+
+.hecho-citas { margin-top: 8px; }
+.hecho-citas > summary {
+  cursor: pointer;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  color: var(--gris-archivo);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  list-style: none;
+}
+.hecho-citas > summary::-webkit-details-marker { display: none; }
+.hecho-citas-lista {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hecho-citas-lista li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.hecho-cita-texto {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 220px;
+}
+
+.hechos-mas { margin-top: 10px; }
+.hechos-mas > summary {
+  cursor: pointer;
+  font-family: var(--f-mono), monospace;
+  font-size: 0.8rem;
+  color: var(--hilo);
+  padding: 8px 0;
+  list-style: none;
+}
+.hechos-mas > summary::-webkit-details-marker { display: none; }
+.hechos-mas[open] > summary { display: none; }
+
+/* ---- Aparece en un solo medio (menor corroboración) ------------------ */
+.unico-bloque { margin-top: 24px; }
+
+.unico-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.unico-item {
+  border-left: 3px solid var(--resaltador);
+  padding: 8px 0 8px 14px;
+  margin-left: 4px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.unico-texto {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  flex: 1;
+  min-width: 220px;
+}
+
+/* ---- Chips de "Análisis por día" ------------------------------------
+   Superficie canónica: están TODOS los días analizados, empareje o no el
+   separador del hilo. Mismo lenguaje visual que .historias-orden y
+   .presets-fecha (botonera de bordes contiguos). */
+.dias-chips {
+  display: flex;
+  gap: 0;
+  flex-wrap: wrap;
+}
+.dia-chip {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.8rem;
+  padding: 7px 12px;
+  border: 1px solid var(--tinta);
+  border-left-width: 0;
+  background: var(--papel);
+  color: var(--tinta);
+  cursor: pointer;
+  white-space: nowrap;
+  min-height: 38px;
+}
+.dia-chip:first-of-type { border-left-width: 1px; }
+.dia-chip:hover { background: var(--tinta); color: var(--papel); }
+
+/* Ojo: con flex-wrap, el primer chip de cada fila posterior queda sin
+   borde izquierdo. A 7 medios y pocos días por historia no se nota; si
+   algún día una historia trae 15 chips, pasar a gap:8px y borde completo
+   en todos. Anotado para no rediagnosticarlo. */
+
+/* ---- Botón "Hechos del día" en el separador de la línea de tiempo ---- */
+.hilo-separador-dia {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.hilo-separador-texto {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--tinta);
+  flex-shrink: 0;
+}
+
+.dia-boton {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 3px 10px;
+  border: 1px solid var(--hilo);
+  background: var(--papel);
+  color: var(--hilo);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dia-boton:hover { background: var(--hilo); color: var(--papel); }
+
+/* ---- Modal de día (<dialog> nativo) ---------------------------------
+   El fondo oscurecido no es sombra ni gradiente: es una capa de tinta
+   translúcida, coherente con "sin sombras/gradientes". El borde grueso de
+   tinta es lo que separa la ventana del fondo. */
+.modal-dia {
+  border: 3px solid var(--tinta);
+  padding: 0;
+  background: var(--papel);
+  color: var(--tinta);
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(86vh, 900px);
+  overflow: hidden;
+}
+.modal-dia::backdrop {
+  background: rgba(23, 26, 46, 0.62);
+}
+
+.modal-dia-caja {
+  display: flex;
+  flex-direction: column;
+  max-height: inherit;
+}
+
+/* Encabezado pegajoso: el cierre queda a la vista aunque el día sea largo
+   y haya que hacer scroll dentro del modal. */
+.modal-dia-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--papel);
+  border-bottom: var(--linea);
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.modal-dia-titulo {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+}
+
+/* Cierre con TEXTO, no solo un icono: el reflejo de dar "atrás" aparece
+   cuando no se ve dónde salir. Relleno sólido de tinta para que sea el
+   elemento de mayor contraste del encabezado. */
+.modal-dia-cerrar {
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 8px 14px;
+  min-height: 40px;
+  border: 1px solid var(--tinta);
+  background: var(--tinta);
+  color: var(--papel);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.modal-dia-cerrar:hover { background: var(--hilo); border-color: var(--hilo); }
+
+.modal-dia-cuerpo {
+  overflow-y: auto;
+  padding: 16px 18px 4px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.modal-dia-pie {
+  border-top: 1px dotted var(--gris-archivo);
+  padding: 12px 18px 16px;
+}
+/* Segundo cierre al final: quien terminó de leer un día denso está abajo
+   y no debería volver arriba para salir. */
+.modal-dia-cerrar-ancho {
+  width: 100%;
+  font-family: var(--f-ui), sans-serif;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 12px;
+  min-height: 44px;
+  border: 1px solid var(--tinta);
+  background: var(--papel);
+  color: var(--tinta);
+  cursor: pointer;
+}
+.modal-dia-cerrar-ancho:hover { background: var(--tinta); color: var(--papel); }
+
+/* ---- Contenido de un día (dentro del modal) ------------------------- */
+.dia-contenido { padding-bottom: 8px; }
+
+.dia-medios-fila {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.74rem;
+  color: var(--gris-archivo);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px dotted var(--gris-archivo);
+}
+
+.dia-seccion { margin-top: 4px; }
+.dia-vacio { margin-top: 14px; }
+
+.sintesis-bloque { margin-top: 4px; }
+.sintesis-texto {
+  font-size: 0.98rem;
+  line-height: 1.6;
+  max-width: 620px;
+}
+
+/* ---- Móvil ---------------------------------------------------------- */
+@media (max-width: 560px) {
+  .modal-dia {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 100dvh;
+    height: 100dvh;
+    border-width: 0;
+    margin: 0;
+  }
+  /* A pantalla completa el borde no dice nada; lo que tiene que quedar
+     claro es la barra de cierre. */
+  .modal-dia-header { border-bottom: 2px solid var(--tinta); }
+
+  .ultimo-texto { font-size: 1rem; }
+
+  .dias-chips { gap: 8px; }
+  .dia-chip { border-left-width: 1px; }
+
+  .hilo-separador-dia { gap: 8px; }
+  .dia-boton { padding: 6px 10px; min-height: 34px; }
+
+  /* La cita, siempre debajo del medio, nunca al lado. Sin esto,
+     .hecho-citas-lista li (flex-wrap con min-width:220px en la cita)
+     queda al arbitrio del largo del nombre del medio y de la cita: a
+     veces entran juntos en la línea, a veces no — inconsistente entre
+     ítems de la misma lista (medido en captura real a 375px). */
+  .hecho-citas-lista li {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .hecho-cita-texto { min-width: 0; }
 }

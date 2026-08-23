@@ -1,5 +1,24 @@
-// TRAMA — Expediente de historia (clúster de Fase 2).
+// TRAMA — Expediente de historia (clúster de Fase 2 + análisis de Fase 3).
 // Server Component: solo lectura, revalidación c/5 min.
+//
+// CAMBIOS DE ESTA UNIDAD (frontend de Fase 3, Tier 1):
+//  + Q5 a resumenes_dia: síntesis / hechos corroborados / solo_un_medio por día.
+//  + Síntesis del día más reciente bajo el título (mitiga el título obsoleto).
+//  + Sección "Lo que reportaron los medios": corroborado (fuerte) y un-solo-medio (débil).
+//  + Modal por día, disparado desde chips y desde el separador de día del hilo.
+//  – ELIMINADO el placeholder "Análisis de persuasión": el carril per-artículo está
+//    cerrado y medido (Arquitectura §5, BITACORA 2026-07-17, prevalencia 0,15%). Ese
+//    material NO existe y no va a existir; prometerlo en la página es prometer una
+//    acusación que el proyecto decidió no hacer. Su heredero honesto es la comparación
+//    inter-medio ("qué destaca cada medio"), que entra cuando `comparaciones` pase su
+//    auditoría pendiente.
+//  – ELIMINADO el placeholder "Reacciones": su fuente supuesta era `tipo='opinion'`,
+//    que está medido como poco fiable (El Tiempo y El Colombiano dan 0% de opinión,
+//    lo cual es falso). Su heredero es la extracción de citas atribuidas, unidad propia.
+//  ~ Refactor: el nodo del hilo cronológico estaba duplicado literal entre la vista
+//    previa y el "ver más". Se extrajo a <NodoHilo>. Presentación pura, sin cambio
+//    de comportamiento; se hace ahora porque agregar el botón de día en dos copias
+//    es exactamente cómo se desincronizan.
 import { Fragment } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -9,8 +28,13 @@ import {
   tituloCanonico,
   etiquetarAnclas,
 } from "@/lib/colapsarCluster";
+import ModalDia from "@/app/components/ModalDia";
 
 export const revalidate = 300;
+
+// Cuántos hechos corroborados se muestran en la sección de portada antes de plegar.
+// El resto vive en el modal del día, no repetido acá.
+const HECHOS_VISIBLES = 3;
 
 // ── Helpers de formato ────────────────────────────────────────────────────────
 
@@ -46,6 +70,39 @@ function diffDiasCO(desde, hasta) {
   return Math.round((d2 - d1) / 86400000);
 }
 
+// ── Fechas de resumenes_dia: se leen como STRING, jamás con new Date() ────────
+// `resumenes_dia.dia` es de tipo DATE (verificado en information_schema el
+// 2026-08-22; la deuda de BITACORA que lo daba por TIMESTAMP es stale). PostgREST
+// lo devuelve como "2026-07-20" pelado: ya ES el día-calendario de Bogotá que
+// calculó el backend, sin hora ni zona que interpretar.
+//
+// Por eso NO se pasa por new Date(): una fecha sin hora no tiene zona horaria que
+// convertir, y convertirla igual es un error de categoría — le resta el offset y
+// la corre al día anterior. Es exactamente el bug que se encontró en
+// _dia_bogota() del backend el 2026-08-22 (corrimiento de 1 día en el 87% del
+// corpus). No lo repitamos en la capa de lectura: la cadena ya es la clave.
+function claveDiaResumen(dia) {
+  return String(dia).slice(0, 10);
+}
+
+// Para MOSTRAR esa clave en español. Se ancla al mediodía UTC a propósito: con
+// "T12:00:00Z" ninguna conversión de zona (Bogotá es UTC-5) puede cruzar la
+// medianoche y cambiar el día. Anclarlo a medianoche sí lo cruzaría.
+function fechaLargaDesdeClave(clave) {
+  const texto = new Date(clave + "T12:00:00Z")
+    .toLocaleDateString("es-CO", {
+      timeZone: "America/Bogota", weekday: "long", day: "numeric", month: "long",
+    })
+    .replace(",", "");
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
+}
+
+function fechaCortaDesdeClave(clave) {
+  return new Date(clave + "T12:00:00Z").toLocaleDateString("es-CO", {
+    timeZone: "America/Bogota", day: "numeric", month: "short",
+  });
+}
+
 // Fecha corta para el índice de trama, ej. "16 jul".
 function fechaCortaCO(ts) {
   return new Date(ts).toLocaleDateString("es-CO", {
@@ -65,21 +122,20 @@ function separadorDiaCO(ts) {
 
 // Empareja cada artículo del hilo con su separador de día (null si cae el
 // mismo día-calendario Bogotá que el artículo anterior). El primero siempre
-// lleva separador. Se calcula UNA vez sobre la lista completa y ordenada para
-// que el corte de día no se pierda entre la vista previa y "ver más".
+// lleva separador. Devuelve también la CLAVE del día, para poder colgar el
+// análisis de Fase 3 del separador correspondiente cuando exista.
 function construirHilo(articulos) {
   let diaAnterior = null;
   return articulos.map((a) => {
     const dia = claveDiaCO(a.fecha_primera_captura);
     const separador = dia !== diaAnterior ? separadorDiaCO(a.fecha_primera_captura) : null;
     diaAnterior = dia;
-    return { articulo: a, separador };
+    return { articulo: a, separador, diaKey: dia };
   });
 }
 
 // Rango + duración del clúster para el encabezado, ej. "Del 16 al 21 de julio
-// · 5 días". Si inicio y fin caen en el mismo día-calendario Bogotá, no hay
-// rango que mostrar: se cae a la fecha única.
+// · 5 días".
 function rangoConDuracion(inicio, fin) {
   if (!inicio) return "fecha desconocida";
   const finEfectivo = fin || inicio;
@@ -105,7 +161,161 @@ function rangoConDuracion(inicio, fin) {
   return `Del ${mismoMes ? soloDia(inicio) : conMes(inicio)} al ${conMes(finEfectivo)} · ${dias} ${dias === 1 ? "día" : "días"}`;
 }
 
-// ── Sub-componentes (Server, misma página) ────────────────────────────────────
+// ── Sub-componentes de Fase 3 ─────────────────────────────────────────────────
+
+// Insignia de medio reutilizando las tintas de archivo ya asignadas por medio.
+function Medio({ slug, nombrePorSlug }) {
+  return (
+    <span className={`tag tag-medio medio-${slug}`}>
+      {nombrePorSlug.get(slug) ?? slug}
+    </span>
+  );
+}
+
+// Nota de método. DISCLOSURE es principio del proyecto, no adorno: publicar
+// derivados de IA sobre opacidad mediática sin declarar el método sería la misma
+// opacidad que Trama critica.
+function NotaMetodo({ resumen, variante = "" }) {
+  return (
+    <p className={`metodo-nota ${variante}`}>
+      Generado automáticamente ({resumen.modelo ?? "LLM"}
+      {resumen.prompt_version ? ` · prompt ${resumen.prompt_version}` : ""}) a partir
+      de los artículos de ese día. Las citas se verifican como copia literal del
+      original antes de publicarse.
+    </p>
+  );
+}
+
+// UN hecho corroborado.
+//
+// PROBLEMA DE DISEÑO, RESUELTO ACÁ: un "hecho" en resumenes_dia NO tiene enunciado
+// propio — es solo una lista de spans verbatim de medios distintos que dicen lo
+// mismo. No hay una frase "el hecho" que mostrar, y redactarla nosotros sería
+// fabricación: exactamente lo que el gate verbatim existe para impedir.
+// Solución: se muestra UN span como enunciado visible, entre comillas y atribuido a
+// su medio, y al lado los medios que lo corroboran. La regla de selección es
+// determinista (el span más corto, y a igual largo el slug menor) para que el
+// mismo hecho se vea igual en cada render. Trama nunca habla en voz propia acá:
+// solo dice quiénes coinciden.
+function HechoCorroborado({ hecho, nombrePorSlug }) {
+  const spans = (hecho?.spans ?? []).filter((s) => s?.span && s?.medio);
+  if (!spans.length) return null;
+
+  const ordenados = [...spans].sort(
+    (a, b) => a.span.length - b.span.length || (a.medio < b.medio ? -1 : 1)
+  );
+  const principal = ordenados[0];
+  const medios = [...new Set(ordenados.map((s) => s.medio))];
+  const otros = ordenados.slice(1);
+
+  return (
+    <li className="hecho">
+      <blockquote className="hecho-enunciado">
+        «{principal.span}»
+      </blockquote>
+      <div className="hecho-medios">
+        <span className="hecho-conteo">
+          {medios.length} {medios.length === 1 ? "medio" : "medios"} coinciden
+        </span>
+        {medios.map((m) => (
+          <Medio key={m} slug={m} nombrePorSlug={nombrePorSlug} />
+        ))}
+      </div>
+      {otros.length > 0 && (
+        <details className="hecho-citas">
+          <summary>Ver las {ordenados.length} citas literales</summary>
+          <ul className="hecho-citas-lista">
+            {ordenados.map((s, i) => (
+              <li key={`${s.medio}-${i}`}>
+                <Medio slug={s.medio} nombrePorSlug={nombrePorSlug} />
+                <span className="hecho-cita-texto">«{s.span}»</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </li>
+  );
+}
+
+// Un ítem de solo_un_medio.
+//
+// FRASEO NO NEGOCIABLE: el gate verbatim verifica que el span EXISTE en ese medio.
+// NO verifica que esté AUSENTE en los demás — eso el pipeline no lo prueba. Decir
+// "El Tiempo omitió X" sería una afirmación refutable en diez segundos por
+// cualquiera (el riesgo registrado: "no acusa, pero puede mentir"). Por eso el
+// rótulo es descriptivo — dónde apareció —, nunca acusatorio — quién lo calló.
+function ItemUnicoMedio({ item, nombrePorSlug }) {
+  if (!item?.span || !item?.medio) return null;
+  return (
+    <li className="unico-item">
+      <Medio slug={item.medio} nombrePorSlug={nombrePorSlug} />
+      <span className="unico-texto">«{item.span}»</span>
+    </li>
+  );
+}
+
+// Contenido completo de UN día. Es lo que va dentro del modal: se renderiza en el
+// servidor y se le pasa a ModalDia como children (ModalDia no consulta nada).
+function ContenidoDia({ resumen, nombrePorSlug }) {
+  const hechos = resumen.hechos_corroborados ?? [];
+  const unicos = resumen.solo_un_medio ?? [];
+  const medios = resumen.medios ?? [];
+
+  return (
+    <div className="dia-contenido">
+      <p className="dia-medios-fila">
+        {medios.length} {medios.length === 1 ? "medio cubrió" : "medios cubrieron"} este día:{" "}
+        {medios.map((m) => (
+          <Medio key={m} slug={m} nombrePorSlug={nombrePorSlug} />
+        ))}
+      </p>
+
+      {resumen.sintesis && (
+        <div className="sintesis-bloque">
+          <h3 className="sub-titulo">Qué se movió ese día</h3>
+          <p className="sintesis-texto">{resumen.sintesis}</p>
+        </div>
+      )}
+
+      {hechos.length > 0 ? (
+        <div className="dia-seccion">
+          <h3 className="sub-titulo">En lo que coinciden</h3>
+          <ul className="hechos-lista">
+            {hechos.map((h, i) => (
+              <HechoCorroborado key={i} hecho={h} nombrePorSlug={nombrePorSlug} />
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="gris-archivo dia-vacio">
+          {medios.length < 2
+            ? "Un solo medio cubrió este día: no hay con qué corroborar."
+            : "Ningún hecho superó la corroboración de dos o más medios este día."}
+        </p>
+      )}
+
+      {unicos.length > 0 && (
+        <div className="dia-seccion">
+          <h3 className="sub-titulo">Aparece en un solo medio</h3>
+          <p className="sub-nota">
+            Reportado por una sola de las coberturas de ese día. No significa que los
+            demás lo hayan callado: significa que el análisis no lo encontró en ellos.
+          </p>
+          <ul className="unico-lista">
+            {unicos.map((u, i) => (
+              <ItemUnicoMedio key={i} item={u} nombrePorSlug={nombrePorSlug} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <NotaMetodo resumen={resumen} />
+    </div>
+  );
+}
+
+// ── Sub-componentes existentes ────────────────────────────────────────────────
 
 function CardAncla({ articulo: a, label }) {
   return (
@@ -227,8 +437,6 @@ function NodoTrama({ h, esActual }) {
 }
 
 function IndiceTrama({ tramaOrdenada, tramaColapsada, storyId }) {
-  // El colapso solo aplica si hay algo que ocultar (>3 sub-hechos); si no,
-  // tramaColapsada === tramaOrdenada y se pinta un único <ol> sin controles.
   const colapsable = tramaOrdenada.length > tramaColapsada.length;
   return (
     <section className="historia-seccion trama-seccion">
@@ -256,13 +464,94 @@ function IndiceTrama({ tramaOrdenada, tramaColapsada, storyId }) {
   );
 }
 
+// Nodo del hilo cronológico. Extraído de las dos copias literales que había
+// (vista previa y "ver más"): con el botón de día encima, mantener dos copias
+// sincronizadas a mano era cuestión de tiempo.
+function NodoHilo({ a }) {
+  return (
+    <li className="hilo-nodo">
+      <div className="hilo-nodo-meta">
+        {a.editada ? (
+          <>
+            <span className="hilo-hora hilo-hora-tachada">
+              {horaCO(a.fecha_primera_captura)}
+            </span>
+            <span className="hilo-hora hilo-hora-nueva">
+              {horaCO(a.fecha_ultima_captura)}
+            </span>
+            <span className="tag tag-editada">editada</span>
+          </>
+        ) : (
+          <span className="hilo-hora">{horaCO(a.fecha_primera_captura)}</span>
+        )}
+        <Link
+          href={`/medio/${a.medio_slug}`}
+          className={`tag tag-medio medio-${a.medio_slug}`}
+        >
+          {a.medio_nombre}
+        </Link>
+        {a.seccion && <span className="tag tag-seccion">{a.seccion}</span>}
+      </div>
+
+      <div className="hilo-nodo-titulo">
+        {a.titulo_cambio ? (
+          <>
+            <span className="hilo-titulo-tachado">{a.titulo_original}</span>{" "}
+            <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
+          </>
+        ) : (
+          <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
+        )}
+      </div>
+
+      {/* Popup de historial de capturas (sin JS: <details>) */}
+      {a.n_capturas > 1 && (
+        <details className="hilo-historial">
+          <summary>
+            {a.n_capturas} capturas
+            {!a.editada && " · solo cuerpo/hash"}
+          </summary>
+          <ul className="hilo-historial-lista">
+            {a.capturas.map((c, i) => (
+              <li key={c.hash_sha256}>
+                <span className="hilo-hora">{horaCO(c.fecha_captura)}</span>
+                <Link href={`/articulo/${c.article_id}`} className="hilo-hash">
+                  {c.hash_sha256.slice(0, 12)}…
+                </Link>
+                {i > 0 && c.titulo !== a.capturas[i - 1].titulo && (
+                  <span className="hilo-cambio-label"> · título cambiado</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </li>
+  );
+}
+
+// Separador de día del hilo. Si existe análisis de Fase 3 para ESE día-calendario,
+// cuelga el botón que abre el modal, justo al lado de la fecha.
+function SeparadorHilo({ texto, resumen, nombrePorSlug }) {
+  return (
+    <li className="hilo-separador-dia">
+      <span className="hilo-separador-texto">{texto}</span>
+      {resumen && (
+        <ModalDia
+          etiquetaBoton="Hechos del día"
+          tituloModal={fechaLargaDesdeClave(claveDiaResumen(resumen.dia))}
+        >
+          <ContenidoDia resumen={resumen} nombrePorSlug={nombrePorSlug} />
+        </ModalDia>
+      )}
+    </li>
+  );
+}
+
 // ── Página ────────────────────────────────────────────────────────────────────
 
 export default async function Historia({ params }) {
   // ── Q1: la historia + sus representantes por URL (story_articles) ──
-  // story_articles es caché derivada del clustering: 1 fila por URL (la última
-  // captura), única fuente de los scores y es_ancla. Trae el representante
-  // COMPLETO para servir de piso si la Q2 del historial falla.
   const { data: story, error } = await supabase
     .from("stories")
     .select(`
@@ -281,10 +570,13 @@ export default async function Historia({ params }) {
 
   if (error || !story) notFound();
 
-  // Scores + es_ancla viven SOLO en story_articles, indexados por URL (el átomo
-  // del clustering). Guardamos también el representante completo como fallback.
   const metaPorUrl = new Map();
   const representantes = [];
+  // Slug -> nombre legible del medio. Fase 3 devuelve SLUGS (es el contrato de sus
+  // prompts); las insignias necesitan el nombre. Se arma desde los outlets que ya
+  // vienen en Q1 — cero queries extra.
+  const nombrePorSlug = new Map();
+
   for (const sa of story.story_articles ?? []) {
     const art = sa.articles;
     if (!art) continue;
@@ -296,6 +588,7 @@ export default async function Historia({ params }) {
       score_cobertura:   sa.score_cobertura,
       score_divergencia: sa.score_divergencia,
     };
+    if (meta.medio_slug) nombrePorSlug.set(meta.medio_slug, meta.medio_nombre ?? meta.medio_slug);
     metaPorUrl.set(art.url, meta);
     representantes.push({
       article_id:    art.id,
@@ -312,14 +605,6 @@ export default async function Historia({ params }) {
   }
 
   // ── Q2: el historial completo de ediciones ──
-  // articles es inmutable y conserva TODAS las capturas (mismo url, hash
-  // distinto = edición editorial o re-extracción nuestra). El colapso por URL
-  // del clustering (BITACORA 2026-06-23) las dejó fuera de story_articles, lo
-  // que rompió la cronología de ediciones. Las recuperamos AQUÍ, en la capa de
-  // presentación, sin tocar clustering ni esquema: colapsarCluster.js ya sabe
-  // agrupar capturas por url y detectar el cambio de título/subtítulo. Los
-  // scores se heredan del representante de cada URL (no existen por captura).
-  // Si la query falla o no devuelve nada, caemos a `representantes`.
   const urls = [...metaPorUrl.keys()];
   let capturas = representantes;
 
@@ -361,22 +646,10 @@ export default async function Historia({ params }) {
   const anclas      = articulos.filter((a) => a.es_ancla);
   const secundarias = articulos.filter((a) => !a.es_ancla);
   const labels      = etiquetarAnclas(articulos);
-  // colapsarCluster ya devuelve articulos ordenados por fecha_primera_captura
-  // asc (su contrato, no se toca); tituloCanonico y etiquetarAnclas no dependen
-  // del orden (usan reduce/filter), así que se calculan sobre `articulos` tal
-  // cual. La línea de tiempo se pinta desc (reciente primero): el hilo se arma
-  // sobre una copia invertida, no sobre `articulos`. construirHilo solo compara
-  // días consecutivos, así que funciona igual de bien en desc.
   const articulosDesc = [...articulos].reverse();
   const hilo          = construirHilo(articulosDesc);
 
   // ── Q3: historias conectadas (story_relations, espejo dirigido) ──
-  // El grafo es espejo: reescribir_stories inserta ambas direcciones, así que
-  // filtrar por origen_id basta para traer todos los vecinos sin duplicar.
-  // Tope 50 = guarda de cordura (el hub más denso medido tiene grado 13); el
-  // recorte a 5 es de PRESENTACIÓN y vive en el render, no acá. Dos queries al
-  // estilo de la casa para no depender del hint de FK (story_relations tiene dos
-  // claves a stories).
   const { data: relRows } = await supabase
     .from("story_relations")
     .select("destino_id, n_especificas, coseno")
@@ -399,16 +672,13 @@ export default async function Historia({ params }) {
         const s = byId.get(r.destino_id);
         return s ? { ...s, n_especificas: r.n_especificas, coseno: r.coseno } : null;
       })
-      .filter(Boolean); // preserva el orden de relRows (n_esp desc, coseno desc)
+      .filter(Boolean);
   }
 
   const relPrincipales = relaciones.slice(0, 5);
   const relResto       = relaciones.slice(5);
 
   // ── Q4: hermanas del beat-split (story_relations tipo='misma_trama') ──
-  // Las hermanas forman un clique (mismo componente Louvain padre): un solo
-  // query por origen_id las trae todas, sin depender de compuertas ni de NER
-  // (BITACORA 2026-08-08 — "la hermandad es verdad mecánica, no umbral").
   const { data: tramaRows } = await supabase
     .from("story_relations")
     .select("destino_id")
@@ -427,9 +697,6 @@ export default async function Historia({ params }) {
       `)
       .in("id", hermanaIds);
 
-    // Mismo criterio de título que tituloH (canónico: el titular-noticia más
-    // neutral que no sea cita) para que el título no cambie al hacer clic
-    // desde el índice hacia la página destino de la hermana.
     const hermanasConTitulo = (hermanas ?? []).map((s) => {
       const arts = (s.story_articles ?? [])
         .map((sa) => ({
@@ -457,9 +724,6 @@ export default async function Historia({ params }) {
     const conjunto = [actual, ...hermanasConTitulo];
 
     if (conjunto.length >= 2) {
-      // Orden del arco: día-calendario Bogotá ASC (viejo→nuevo). Desempate
-      // por n_medios DESC, luego id ASC. NUNCA por el timestamp crudo dentro
-      // del día — eso ordena por qué medio publicó primero, no por el arco.
       tramaOrdenada = [...conjunto].sort((a, b) => {
         const diaA = claveDiaCO(a.fecha_inicio);
         const diaB = claveDiaCO(b.fecha_inicio);
@@ -469,25 +733,55 @@ export default async function Historia({ params }) {
       });
 
       if (tramaOrdenada.length > 3) {
-        // Top-3 por cobertura (n_medios, desempate n_articulos, desempate id).
         const porCobertura = [...tramaOrdenada].sort((a, b) => {
           if (b.n_medios !== a.n_medios) return b.n_medios - a.n_medios;
           if (b.n_articulos !== a.n_articulos) return b.n_articulos - a.n_articulos;
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
         const top3 = porCobertura.slice(0, 3);
-        // Garantiza "Estás aquí" visible en el colapso: si el nodo actual no
-        // quedó entre los 3, reemplaza al de menor cobertura de esos 3.
         if (!top3.some((h) => h.id === actual.id)) top3[2] = actual;
         const idsColapsados = new Set(top3.map((h) => h.id));
-        // Filtra sobre tramaOrdenada (ya cronológico) para que el trío quede
-        // en su propio orden temporal relativo, no en orden de ranking.
         tramaColapsada = tramaOrdenada.filter((h) => idsColapsados.has(h.id));
       } else {
         tramaColapsada = tramaOrdenada;
       }
     }
   }
+
+  // ── Q5: análisis de Fase 3 por día (resumenes_dia) ──
+  //
+  // Nota de expectativa (TRASPASO 2026-08-22): hoy solo las ~68 historias ACTIVAS
+  // tienen filas acá; el histórico (~750) todavía no se ha procesado. La mayoría de
+  // los expedientes va a renderizar el estado vacío, y eso es correcto, no un bug.
+  //
+  // `dia` es DATE (verificado 2026-08-22). Acá no hace falta filtro de fecha en
+  // absoluto — se traen todos los días de la historia y se ordenan en la base.
+  const { data: resumenesDia } = await supabase
+    .from("resumenes_dia")
+    .select("dia, sintesis, hechos_corroborados, solo_un_medio, medios, modelo, prompt_version")
+    .eq("story_id", story.id)
+    .order("dia", { ascending: false });
+
+  const dias = resumenesDia ?? [];
+  const diaReciente = dias[0] ?? null;
+
+  // Índice día-calendario -> análisis, para colgar el botón del separador del hilo.
+  //
+  // ADVERTENCIA MEDIDA (2026-08-22): la línea de tiempo separa por
+  // fecha_primera_captura (cuándo corrió NUESTRO cron) y Fase 3 trocea por
+  // fecha_publicacion (el día periodístico). Se midió 95,6% de divergencia, de la
+  // cual 87,4% es un corrimiento de exactamente 1 día causado por un bug de
+  // _dia_bogota() en el backend (convierte de zona una fecha sin hora). Aun
+  // arreglado ese bug, los dos calendarios NO son el mismo. Por eso el botón del
+  // separador es
+  // OPORTUNISTA, no la única puerta: la fila de chips "Análisis por día" de más
+  // abajo lista SIEMPRE los días completos. Si el matching falla, no se pierde ni
+  // un día de análisis; solo se pierde el atajo. Fallar en silencio no es opción.
+  const resumenPorDia = new Map(dias.map((d) => [claveDiaResumen(d.dia), d]));
+
+  const hechosRecientes = diaReciente?.hechos_corroborados ?? [];
+  const unicosRecientes = diaReciente?.solo_un_medio ?? [];
+  const claveReciente   = diaReciente ? claveDiaResumen(diaReciente.dia) : null;
 
   return (
     <>
@@ -512,6 +806,23 @@ export default async function Historia({ params }) {
         </div>
       </div>
 
+      {/* ── LO ÚLTIMO ──
+          Mitigación del TÍTULO OBSOLETO: el título de una historia que mutó a lo
+          largo de días no existe como titular de ningún artículo. No se puede
+          arreglar en el frontend (haría falta el digest de arco, unidad de
+          backend). Lo que sí se puede: poner el estado ACTUAL del hecho justo
+          debajo, para que el lector no dependa del título. Este bloque es el
+          hueco reservado del digest: cuando exista, entra acá sin rediseñar. */}
+      {diaReciente?.sintesis && (
+        <div className="ultimo-bloque">
+          <span className="ultimo-label">
+            Lo último · {fechaLargaDesdeClave(claveReciente)}
+          </span>
+          <p className="ultimo-texto">{diaReciente.sintesis}</p>
+          <NotaMetodo resumen={diaReciente} variante="metodo-nota-compacta" />
+        </div>
+      )}
+
       {/* ── DE LA MISMA TRAMA (hermanas del beat-split) ── */}
       {tramaOrdenada.length >= 2 && (
         <IndiceTrama
@@ -521,92 +832,118 @@ export default async function Historia({ params }) {
         />
       )}
 
-      {/* ── RESUMEN — PLACEHOLDER ── */}
-      <div className="placeholder-fase">
-        <span className="placeholder-fase-label">Fase 3 · generado por LLM por clúster</span>
-        <p className="placeholder-fase-texto">
-          Resumen del hecho: el pipeline de análisis de Fase 3 sintetizará
-          aquí lo que todos los artículos tienen en común, sin el encuadre
-          de ningún medio en particular.
-        </p>
-      </div>
+      {/* ── LO QUE REPORTARON LOS MEDIOS ──
+          Dos niveles de confianza, en orden de fuerza: lo corroborado por 2+ medios
+          (cada cita verificada literal contra su original) y lo que apareció en uno
+          solo. Acotado AL DÍA MÁS RECIENTE a propósito: los días NO se fusionan.
+          Mezclar hechos de días distintos en una lista sola reintroduce la deriva
+          causal que el troceo por día eliminó por construcción (el modo de falla
+          Pizarro). El resto de los días vive en su propio modal, con su fecha. */}
+      {diaReciente && (
+        <section className="historia-seccion">
+          <h2 className="seccion-titulo">Lo que reportaron los medios</h2>
+          <p className="seccion-alcance">
+            Del {fechaLargaDesdeClave(claveReciente).toLowerCase()} — el día más
+            reciente con análisis.
+            {dias.length > 1 && " Los demás días, más abajo."}
+          </p>
 
-      {/* ── HILO CRONOLÓGICO ── */}
-      <section className="historia-seccion">
-        <h2 className="seccion-titulo">Línea de tiempo</h2>
-        {/* Nota: el hilo arranca como lista CSS. SVG con curvas Bézier
-            ("hilo que cuelga entre clavos") es el siguiente refinamiento visual. */}
-        {/* Editorial: las 3 visibles son las más recientes (orden cronológico desc);
-            cuándo destilar qué mostrar primero es decisión de producto futura. */}
-        <ol className={`hilo-cronologico${articulos.length > 3 ? " hilo-preview-fade" : ""}`}>
-          {hilo.slice(0, 3).map(({ articulo: a, separador }) => (
-            <Fragment key={a.url}>
-              {separador && (
-                <li className="hilo-separador-dia">{separador}</li>
-              )}
-              <li className="hilo-nodo">
-              <div className="hilo-nodo-meta">
-                {a.editada ? (
-                  <>
-                    <span className="hilo-hora hilo-hora-tachada">
-                      {horaCO(a.fecha_primera_captura)}
-                    </span>
-                    <span className="hilo-hora hilo-hora-nueva">
-                      {horaCO(a.fecha_ultima_captura)}
-                    </span>
-                    <span className="tag tag-editada">editada</span>
-                  </>
-                ) : (
-                  <span className="hilo-hora">
-                    {horaCO(a.fecha_primera_captura)}
-                  </span>
-                )}
-                <Link
-                  href={`/medio/${a.medio_slug}`}
-                  className={`tag tag-medio medio-${a.medio_slug}`}
-                >
-                  {a.medio_nombre}
-                </Link>
-                {a.seccion && (
-                  <span className="tag tag-seccion">{a.seccion}</span>
-                )}
-              </div>
-
-              <div className="hilo-nodo-titulo">
-                {a.titulo_cambio ? (
-                  <>
-                    <span className="hilo-titulo-tachado">{a.titulo_original}</span>
-                    {" "}
-                    <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
-                  </>
-                ) : (
-                  <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
-                )}
-              </div>
-
-              {/* Popup de historial de capturas (sin JS: <details>) */}
-              {a.n_capturas > 1 && (
-                <details className="hilo-historial">
+          {hechosRecientes.length > 0 ? (
+            <>
+              <ul className="hechos-lista">
+                {hechosRecientes.slice(0, HECHOS_VISIBLES).map((h, i) => (
+                  <HechoCorroborado key={i} hecho={h} nombrePorSlug={nombrePorSlug} />
+                ))}
+              </ul>
+              {hechosRecientes.length > HECHOS_VISIBLES && (
+                <details className="hechos-mas">
                   <summary>
-                    {a.n_capturas} capturas
-                    {!a.editada && " · solo cuerpo/hash"}
+                    Ver {hechosRecientes.length - HECHOS_VISIBLES} hechos más de este día
                   </summary>
-                  <ul className="hilo-historial-lista">
-                    {a.capturas.map((c, i) => (
-                      <li key={c.hash_sha256}>
-                        <span className="hilo-hora">{horaCO(c.fecha_captura)}</span>
-                        <Link href={`/articulo/${c.article_id}`} className="hilo-hash">
-                          {c.hash_sha256.slice(0, 12)}…
-                        </Link>
-                        {i > 0 && c.titulo !== a.capturas[i - 1].titulo && (
-                          <span className="hilo-cambio-label"> · título cambiado</span>
-                        )}
-                      </li>
+                  <ul className="hechos-lista">
+                    {hechosRecientes.slice(HECHOS_VISIBLES).map((h, i) => (
+                      <HechoCorroborado
+                        key={i + HECHOS_VISIBLES}
+                        hecho={h}
+                        nombrePorSlug={nombrePorSlug}
+                      />
                     ))}
                   </ul>
                 </details>
               )}
-              </li>
+            </>
+          ) : (
+            <p className="gris-archivo">
+              {(diaReciente.medios ?? []).length < 2
+                ? "Un solo medio cubrió el día más reciente: no hay con qué corroborar."
+                : "Ningún hecho superó la corroboración de dos o más medios ese día."}
+            </p>
+          )}
+
+          {unicosRecientes.length > 0 && (
+            <div className="unico-bloque">
+              <h3 className="sub-titulo">Aparece en un solo medio</h3>
+              <p className="sub-nota">
+                Reportado por una sola de las coberturas de ese día. No significa que
+                los demás lo hayan callado: significa que el análisis no lo encontró
+                en ellos.
+              </p>
+              <ul className="unico-lista">
+                {unicosRecientes.slice(0, 3).map((u, i) => (
+                  <ItemUnicoMedio key={i} item={u} nombrePorSlug={nombrePorSlug} />
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ── ANÁLISIS POR DÍA (chips) ──
+          Superficie canónica y completa: siempre están TODOS los días analizados,
+          independientemente de si el separador del hilo logró emparejarlos. */}
+      {dias.length > 1 && (
+        <section className="historia-seccion">
+          <h2 className="seccion-titulo">Análisis por día</h2>
+          <p className="seccion-alcance">
+            Cada día es una foto independiente: se analiza solo con lo que se publicó
+            ese día, sin encadenarlo con los otros.
+          </p>
+          <div className="dias-chips">
+            {dias.map((d) => {
+              const clave = claveDiaResumen(d.dia);
+              const nMedios = (d.medios ?? []).length;
+              const nHechos = (d.hechos_corroborados ?? []).length;
+              return (
+                <ModalDia
+                  key={clave}
+                  claseBoton="dia-chip"
+                  etiquetaBoton={`${fechaCortaDesdeClave(clave)} · ${nMedios} ${
+                    nMedios === 1 ? "medio" : "medios"
+                  }${nHechos ? ` · ${nHechos} ${nHechos === 1 ? "hecho" : "hechos"}` : ""}`}
+                  tituloModal={fechaLargaDesdeClave(clave)}
+                >
+                  <ContenidoDia resumen={d} nombrePorSlug={nombrePorSlug} />
+                </ModalDia>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* ── HILO CRONOLÓGICO ── */}
+      <section className="historia-seccion">
+        <h2 className="seccion-titulo">Línea de tiempo</h2>
+        <ol className={`hilo-cronologico${articulos.length > 3 ? " hilo-preview-fade" : ""}`}>
+          {hilo.slice(0, 3).map(({ articulo: a, separador, diaKey }) => (
+            <Fragment key={a.url}>
+              {separador && (
+                <SeparadorHilo
+                  texto={separador}
+                  resumen={resumenPorDia.get(diaKey)}
+                  nombrePorSlug={nombrePorSlug}
+                />
+              )}
+              <NodoHilo a={a} />
             </Fragment>
           ))}
         </ol>
@@ -614,74 +951,16 @@ export default async function Historia({ params }) {
           <details className="timeline-mas">
             <summary>Ver {articulos.length - 3} momentos más</summary>
             <ol className="hilo-cronologico">
-              {hilo.slice(3).map(({ articulo: a, separador }) => (
+              {hilo.slice(3).map(({ articulo: a, separador, diaKey }) => (
                 <Fragment key={a.url}>
                   {separador && (
-                    <li className="hilo-separador-dia">{separador}</li>
+                    <SeparadorHilo
+                      texto={separador}
+                      resumen={resumenPorDia.get(diaKey)}
+                      nombrePorSlug={nombrePorSlug}
+                    />
                   )}
-                  <li className="hilo-nodo">
-                  <div className="hilo-nodo-meta">
-                    {a.editada ? (
-                      <>
-                        <span className="hilo-hora hilo-hora-tachada">
-                          {horaCO(a.fecha_primera_captura)}
-                        </span>
-                        <span className="hilo-hora hilo-hora-nueva">
-                          {horaCO(a.fecha_ultima_captura)}
-                        </span>
-                        <span className="tag tag-editada">editada</span>
-                      </>
-                    ) : (
-                      <span className="hilo-hora">
-                        {horaCO(a.fecha_primera_captura)}
-                      </span>
-                    )}
-                    <Link
-                      href={`/medio/${a.medio_slug}`}
-                      className={`tag tag-medio medio-${a.medio_slug}`}
-                    >
-                      {a.medio_nombre}
-                    </Link>
-                    {a.seccion && (
-                      <span className="tag tag-seccion">{a.seccion}</span>
-                    )}
-                  </div>
-
-                  <div className="hilo-nodo-titulo">
-                    {a.titulo_cambio ? (
-                      <>
-                        <span className="hilo-titulo-tachado">{a.titulo_original}</span>
-                        {" "}
-                        <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
-                      </>
-                    ) : (
-                      <Link href={`/articulo/${a.article_id}`}>{a.titulo}</Link>
-                    )}
-                  </div>
-
-                  {/* Popup de historial de capturas (sin JS: <details>) */}
-                  {a.n_capturas > 1 && (
-                    <details className="hilo-historial">
-                      <summary>
-                        {a.n_capturas} capturas
-                        {!a.editada && " · solo cuerpo/hash"}
-                      </summary>
-                      <ul className="hilo-historial-lista">
-                        {a.capturas.map((c, i) => (
-                          <li key={c.hash_sha256}>
-                            <span className="hilo-hora">{horaCO(c.fecha_captura)}</span>
-                            <Link href={`/articulo/${c.article_id}`} className="hilo-hash">
-                              {c.hash_sha256.slice(0, 12)}…
-                            </Link>
-                            {i > 0 && c.titulo !== a.capturas[i - 1].titulo && (
-                              <span className="hilo-cambio-label"> · título cambiado</span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                  </li>
+                  <NodoHilo a={a} />
                 </Fragment>
               ))}
             </ol>
@@ -693,11 +972,6 @@ export default async function Historia({ params }) {
       <section className="historia-seccion">
         <h2 className="seccion-titulo">Versiones</h2>
 
-        {/* Deuda visible solo en clústeres grandes: en clústeres de ≥6 artículos
-            score_cobertura se vuelve baja y plana (la unión de entidades es enorme),
-            y puede hacer ancla a una reacción que nombra muchos actores en lugar
-            del artículo más factual. En clústeres chicos el efecto no se manifiesta.
-            (Documentado en BITACORA 2026-06-16.) */}
         {anclas.length > 0 ? (
           <div className="bento-anclas">
             {anclas.map((a) => (
@@ -731,31 +1005,9 @@ export default async function Historia({ params }) {
         )}
       </section>
 
-      {/* ── ANÁLISIS DE PERSUASIÓN — PLACEHOLDER ── */}
-      <section className="historia-seccion">
-        <h2 className="seccion-titulo">Análisis de persuasión</h2>
-        <div className="placeholder-fase">
-          <span className="placeholder-fase-label">Fase 3 · Groq + Llama por clúster</span>
-          <p className="placeholder-fase-texto">
-            Las técnicas de persuasión detectadas (encuadre, omisión, miedo,
-            falsa dicotomía…) aparecerán aquí como acordeón por artículo,
-            con evidencia textual citable.
-          </p>
-        </div>
-      </section>
-
-      {/* ── REACCIONES — PLACEHOLDER ── */}
-      <section className="historia-seccion">
-        <h2 className="seccion-titulo">Reacciones</h2>
-        <div className="placeholder-fase">
-          <span className="placeholder-fase-label">Fase 2 · sin datos</span>
-          <p className="placeholder-fase-texto">
-            El clustering de Fase 2 agrupa solo noticias. Las columnas de
-            opinión, análisis y editoriales sobre este hecho aparecerán aquí
-            cuando el pipeline las adjunte como reacciones.
-          </p>
-        </div>
-      </section>
+      {/* Los placeholders de "Análisis de persuasión" y "Reacciones" se retiraron en
+          esta unidad. Ver cabecera del archivo y BITACORA 2026-08-22 para el porqué
+          y para cuáles son sus herederos. No re-agregarlos sin datos detrás. */}
 
       {/* ── HISTORIAS CONECTADAS ── */}
       <section className="historia-seccion">
