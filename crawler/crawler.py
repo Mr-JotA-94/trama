@@ -28,6 +28,7 @@ import os
 import re
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from xml.etree import ElementTree
 
@@ -221,6 +222,86 @@ def meta_content(html: str, name: str) -> str | None:
     return None
 
 
+# Formatos reales medidos en los 7 medios (2026-08-22). Ninguna librería del stack
+# los cubre todos: datetime.fromisoformat revienta con la hora sin padding y con el
+# espacio antes del offset de El Colombiano ('2026-08-22 8:52:29 -0500'), y añadir
+# dateutil por esto sería traer una dependencia para 15 líneas.
+RE_FECHA_PUB = re.compile(
+    r"(?P<y>\d{4})-(?P<mo>\d{1,2})-(?P<d>\d{1,2})"
+    r"[T ]"
+    r"(?P<h>\d{1,2}):(?P<mi>\d{1,2})(?::(?P<s>\d{1,2}))?"
+    r"(?:\.\d+)?"                       # fracción de segundo (El Espectador)
+    r"\s*(?P<off>Z|[+-]\d{2}:?\d{2})?"  # offset opcional, con o sin ':'
+)
+
+
+def normalizar_fecha_pub(valor: str | None) -> str | None:
+    """ISO 8601 con offset explícito, o None.
+
+    DECISIÓN: sin offset se devuelve None y la cadena cae a la fuente siguiente.
+    Un timestamp sin zona es ambiguo por 5 horas — que es EXACTAMENTE el bug que
+    este parche existe para cerrar. Adivinar la zona reintroduciría el error con
+    cara de estar arreglado. Aplica al <meta> de El Colombiano ('2026-8-22 8:52:29',
+    sin offset), que por eso pierde contra su propio JSON-LD, que sí lo trae.
+    """
+    if not valor:
+        return None
+    m = RE_FECHA_PUB.search(valor.strip())
+    if not m:
+        return None
+    g = m.groupdict()
+    off = g["off"]
+    if off is None:
+        return None
+    if off == "Z":
+        off = "+00:00"
+    elif ":" not in off:
+        off = f"{off[:3]}:{off[3:]}"
+    return (f"{int(g['y']):04d}-{int(g['mo']):02d}-{int(g['d']):02d}"
+            f"T{int(g['h']):02d}:{int(g['mi']):02d}:{int(g['s'] or 0):02d}{off}")
+
+
+def jsonld_date_published(html: str) -> str | None:
+    """datePublished del JSON-LD. Recorre TODOS los bloques y objetos anidados:
+    los medios emiten varios <script type=application/ld+json> y el del artículo
+    no siempre es el primero (misma lección que detectar_paywall_jsonld)."""
+    encontrados = []
+    for bloque in re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html, flags=re.DOTALL | re.IGNORECASE,
+    ):
+        try:
+            data = json.loads(bloque.strip())
+        except Exception:
+            continue
+        pila = [data]
+        while pila:
+            nodo = pila.pop()
+            if isinstance(nodo, dict):
+                if isinstance(nodo.get("datePublished"), str):
+                    encontrados.append(nodo["datePublished"])
+                pila.extend(v for v in nodo.values() if isinstance(v, (dict, list)))
+            elif isinstance(nodo, list):
+                pila.extend(nodo)
+    return max(encontrados, key=len) if encontrados else None
+
+
+def fecha_publicacion_con_hora(html: str, campo) -> tuple[str | None, str]:
+    """Devuelve (fecha_iso, procedencia). Orden medido sobre los 7 medios:
+    JSON-LD gana en 6, <meta> rescata a Vorágine (que no emite JSON-LD)."""
+    for nombre, crudo in (
+        ("jsonld", jsonld_date_published(html)),
+        ("meta",   meta_content(html, "article:published_time")),
+    ):
+        iso = normalizar_fecha_pub(crudo)
+        if iso:
+            return iso, nombre
+    # Piso histórico: trafilatura devuelve SOLO fecha. Se conserva para no perder
+    # el dato, pero la procedencia se REPORTA. Si esta rama deja de ser marginal,
+    # es una regresión — un medio cambió su HTML — y hay que verla, no absorberla.
+    return campo("date"), "trafilatura-solo-fecha"
+
+
 def extraer_articulo(cliente: httpx.Client, url: str, metodo: str = "articlebody") -> dict | None:
     """Descarga y extrae SOLO el contenido visible públicamente."""
     try:
@@ -265,11 +346,13 @@ def extraer_articulo(cliente: httpx.Client, url: str, metodo: str = "articlebody
         if not titulo or len(contenido) < 100:
             # Sin título o casi sin texto visible: no vale como snapshot
             return None
+        fecha_pub, fecha_fuente = fecha_publicacion_con_hora(r.text, campo)
         return {
             "titulo": titulo,
             "subtitulo": subtitulo,
             "autor": (campo("author") or "").strip() or None,
-            "fecha_publicacion": campo("date"),  # ISO o None
+            "fecha_publicacion": fecha_pub,
+            "fecha_fuente": fecha_fuente,   # solo para el log, NO va a la base
             "contenido_visible": contenido,
             "paywall_jsonld": detectar_paywall_jsonld(r.text),
         }
@@ -390,6 +473,7 @@ def main():
         sys.exit("No hay medios en la tabla outlets. ¿Corriste las migraciones?")
 
     total_nuevos, total_duplicados, total_errores = 0, 0, 0
+    fuentes_fecha = defaultdict(int)
 
     with httpx.Client(headers=HEADERS, follow_redirects=True) as cliente:
         for medio in medios:
@@ -419,6 +503,7 @@ def main():
                     if art is None:
                         total_errores += 1
                         continue
+                    fuentes_fecha[art["fecha_fuente"]] += 1
 
                     contenido_limpio = limpiar_contenido(art["contenido_visible"], art["titulo"])
                     if len(contenido_limpio) < 100:
@@ -460,6 +545,7 @@ def main():
     print("\n" + "=" * 60)
     print(f"Corrida {ahora}")
     print(f"Nuevos: {total_nuevos} | Ya existentes (idénticos): {total_duplicados} | Errores: {total_errores}")
+    print(f"  fecha_publicacion por fuente: {dict(fuentes_fecha)}")
 
 
 if __name__ == "__main__":
