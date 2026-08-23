@@ -9,6 +9,14 @@ yo-del-futuro entienda el estado actual sin tener que reconstruirlo de memoria.
 
 ## Operaciones sobre datos (truncates y borrados)
 
+### 2026-08-23 — 3 artículos reales insertados durante el gate del parche de la hora
+El punto 3/4 del gate exigía verificar en base real, así que la corrida acotada de prueba
+(el-colombiano, 3 notas) insertó 3 filas permanentes en `articles`. Son artículos
+legítimamente públicos que el cron habría capturado igual: **no se borraron**, son parte
+del archivo, coherente con la inmutabilidad. Se registra para que nadie las lea después
+como anomalía. Fueron las primeras filas del corpus con hora de publicación real
+(20:01:56, 21:38:53, 23:15:43 UTC).
+
 ### 2026-08-10 — Migración 000018: resumenes_dia CASCADE→SET NULL (Opción A)
 Aplicada a mano en Supabase + espejada en /supabase/migrations/. `story_id` pasa a nullable; el FK
 resumenes_dia_story_id_fkey pasa de ON DELETE CASCADE a ON DELETE SET NULL. Verificado post-aplicación:
@@ -499,6 +507,89 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
 ---
 
 ## Deuda técnica conocida
+
+### 2026-08-23 — [RESUELTA] La hora de publicación: causa, medición y parche mergeado (PR #19)
+SÍNTOMA: `fecha_publicacion` en medianoche UTC exacta en **15.064/15.064 artículos, 100%
+en los siete medios**. Trama no podía afirmar "El Tiempo lo publicó a las 6:03 y El
+Espectador a las 9:40" — afirmación forense de primer orden para un proyecto sobre
+divergencia. Era además la causa raíz del corrimiento de día del 2026-08-22.
+CAUSA (lectura de código, no hipótesis): `crawler.py` usaba `campo("date")` de trafilatura,
+que vía `htmldate` con `outputformat="%Y-%m-%d"` **devuelve solo fecha, nunca hora, por
+diseño de la librería**. Postgres la ancla a medianoche UTC. Default de dependencia que
+nadie había mirado.
+MEDIDO EN LA FUENTE (126 URLs únicas, 18 por medio, 0 errores HTTP): **los 7 medios sí
+exponen la hora con offset**. JSON-LD `datePublished` gana en 6; `<meta
+article:published_time>` rescata a Vorágine (no emite JSON-LD); el `<meta>` de El
+Colombiano viene sin offset y por eso pierde contra su propio JSON-LD.
+CORRECCIÓN DE UNA PREDICCIÓN PROPIA: se anticipó "híbrido por bucket, como `extraccion`".
+FALSO. Una **cadena de respaldo ordenada** cubre los 7 sin config por medio. La solución
+medida salió más simple que la supuesta.
+FIX (PR #19, mergeado, gate 6/6): `normalizar_fecha_pub` + `jsonld_date_published` +
+`fecha_publicacion_con_hora` en crawler.py. Dos guardarraíles que son el corazón:
+1. **Sin offset explícito la fecha se DESCARTA** y cae a la fuente siguiente. Adivinar la
+   zona reintroduciría el error de 5 horas con cara de estar arreglado.
+2. **La procedencia se cuenta y se imprime al cierre de cada corrida** (`fecha_publicacion
+   por fuente: {...}`). No va a la base (sería cambio de esquema). Es el ÚNICO detector de
+   que el parche dejó de funcionar: si un medio cambia su HTML y vuelve a caer al piso de
+   solo-fecha, sin ese print nadie se entera hasta el próximo diag, meses después.
+ALCANCE, declarado: **no recupera el pasado y no podía.** Los ~15k artículos previos quedan
+sin hora para siempre — inmutabilidad funcionando, no un fallo. De acá en adelante sí la hay.
+CASO LA SILLA VACÍA, anotado para que nadie lo "arregle": es el único medio que declara en
+`+00:00` (los otros seis usan `-05:00`), lo que invita a pensar en hora de Bogotá mal
+rotulada = 5h de error sistemático. **Se midió**: `<pubDate>` de su RSS de WordPress contra
+el `datePublished` del JSON-LD del MISMO artículo, **Δ = 0,00 h en 10/10**. Es UTC real.
+"Corregir" ese offset introduciría el error que hoy no existe.
+
+### 2026-08-23 — El análisis de Fase 3 se desvincula solo entre corridas del clustering
+SÍNTOMA (visible en producción apenas se desplegó el frontend): muchas historias con
+análisis hecho muestran la página en blanco. **28 filas huérfanas** (`story_id IS NULL`)
+contra 9 el día anterior.
+CAUSA — Y ACÁ HAY UNA CORRECCIÓN IMPORTANTE. Claude Code reportó que
+`clustering_fase2.py` "hace DELETE + INSERT de toda la tabla stories en cada corrida,
+incluso cuando la historia conserva el mismo uuid_estable". **Eso es FALSO**: el código
+hace `upsert(on_conflict=id)` con poda ACOTADA (`existentes − sids_actuales`), desde el
+2026-07-05. Una historia que conserva su uuid NO se borra y NO dispara el SET NULL.
+El mecanismo real es la **migración del uuid**: un clúster que crece e incorpora una nota
+MÁS ANTIGUA cambia su artículo semilla → uuid5 nuevo → el sid viejo queda fuera de
+`sids_actuales` → lo barre la poda → SET NULL. Es el "residual aceptado" registrado el
+2026-06-21 (caso 2: "el más antiguo abandona / fusión"), ahora con consecuencia visible.
+**LECCIÓN DE MÉTODO, la que hay que guardar: verificar PRESENCIA (hay huérfanas) no es
+verificar el MECANISMO (por qué), y el mecanismo es lo que decide el arreglo.** Un
+diagnóstico que contradice una decisión documentada se verifica en el código antes de
+aceptarse. Tercera vez esta semana que un "hallazgo" plausible no sobrevivió a mirarlo.
+POR QUÉ EL BACKFILL NO LO ARREGLA: la adopción de `procesar_dia` re-vincula por `dia_key`
+= hash del set de hashes del día. Solo adopta si la composición del día es IDÉNTICA. Un
+clúster que pasó de 8 a 47 artículos cambió la composición de sus días → dia_key nuevo →
+esas filas **no se adoptan nunca**: se REGENERAN pagando LLM de nuevo, y las viejas quedan
+huérfanas permanentes. Correr el backfill es cosmético: arregla la foto y se vuelve a
+vaciar en la próxima corrida que haga migrar un sid.
+DECISIÓN: no se parchea con corridas manuales. El arreglo real es **enganchar Fase 3 al
+cron después del clustering** (ya fichado como próximo paso), que hoy está BLOQUEADO por
+el presupuesto de Actions. Mientras tanto, disparar el backfill es una decisión de
+oportunidad —"¿le voy a mostrar el sitio a alguien hoy?"—, no una reparación.
+ALTERNATIVA DE FONDO, registrada en Ideas: que el frontend resuelva los días por `dia_key`
+en vez de por `story_id`.
+
+### 2026-08-23 — Presupuesto de GitHub Actions casi agotado (1.805/2.000)
+SÍNTOMA: 1.805 de 2.000 minutos consumidos al 23 de agosto. ~195 para ~8 días de mes.
+POR QUÉ ES GRAVE Y NO SOLO MOLESTO: si el presupuesto se agota, se apaga el job `crawl`, y
+una nota que el feed rota sin capturarse **no vuelve nunca**. Es de la categoría "pérdida
+permanente de archivo", no de la categoría "deuda derivada".
+LA PREGUNTA QUE PUEDE DISOLVERLO, antes de cualquier optimización: **¿el repo es privado?**
+En repos PÚBLICOS los minutos de Actions son ILIMITADOS. Arquitectura §0 declara Trama
+"Tier 2, compartible públicamente", los secretos nunca vivieron en el repo (regla del
+proyecto) y la disclosure del método es principio declarado. Si no hay razón concreta para
+la privacidad, hacerlo público elimina la restricción en vez de administrarla.
+TRIAJE SI SIGUE PRIVADO, derivado de "archivo antes que derivado":
+· **NO tocar `crawl`** — protege el archivo y es el job barato (httpx + trafilatura).
+· **Recortar `backfill`** (torch CPU + spaCy + sentence-transformers instalados en CADA
+  corrida). Su trabajo es derivado y acumulable: los `embedding NULL` esperan sin perderse.
+  Bajarlo de 4×/día a 1×/día.
+· **MEDIR primero**: Settings → Billing → Actions usage da minutos por workflow. No
+  adivinar cuál es el goloso — la regla de medir antes de arreglar aplica también acá.
+CONSECUENCIA DE PLANIFICACIÓN: **enganchar Fase 3 al cron consume minutos que hoy no
+existen.** El próximo paso de ayer choca con la restricción de hoy y queda detrás.
+
 
 ### 2026-08-22 — load_dotenv sin override lee credenciales fantasma del entorno (Windows local)
 analisis_fase3.py se cambió a load_dotenv(override=True) en la migración a OpenRouter. Pero
@@ -1777,6 +1868,61 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
 ---
 
 ## Ideas registradas (no son deuda, son evolución futura)
+
+
+### 2026-08-23 — Línea de tiempo plegable por día (fusionar "Análisis por día" con el hilo)
+IDEA DE JOTA, viendo la página en producción: los chips de "Análisis por día" y los
+separadores de la línea de tiempo son redundantes — el botón "Hechos del día" ya vive al
+lado de la fecha. Propuesta: **un plegable por día en la línea de tiempo**; plegado muestra
+fecha + botón + los conteos (medios · hechos) **a la derecha del botón, no dentro**;
+desplegado lista los artículos de ESE día. Y se borra la sección de chips.
+ES CORRECTA, PERO EL ORDEN IMPORTA. Los chips no fueron decoración: son la **red de
+seguridad** de que la línea de tiempo corta por `fecha_primera_captura` mientras Fase 3
+trocea por `fecha_publicacion` — dos calendarios distintos. Si un día no empareja, el botón
+del separador no aparece y sin chips ese análisis queda **inalcanzable en silencio**.
+Quitarlos primero cambia redundancia visible por pérdida silenciosa, que es el intercambio
+que este proyecto siempre rechazó.
+SECUENCIA CORRECTA, ahora por fin posible gracias al PR #19:
+1. La línea de tiempo pasa a **agrupar por día de PUBLICACIÓN**, no de captura. Se señaló
+   hace dos sesiones y no se podía porque `fecha_publicacion` no tenía hora. Ahora sí. Con
+   eso los dos calendarios son el mismo POR CONSTRUCCIÓN y el emparejamiento es 100%.
+2. Recién entonces los chips son genuinamente redundantes y se borran.
+RESIDUAL A DECLARAR de ese cambio: los ~15k artículos viejos no tienen hora, así que
+AGRUPAR por publicación funciona (la fecha es correcta) pero ORDENAR dentro del día no —
+caerían todos a las 00:00. El orden intra-día tendría que seguir saliendo de la captura, y
+la hora visible de cada nodo probablemente también, mostrando la de publicación solo cuando
+existe de verdad. Es un híbrido; se decide con la página delante, no en abstracto.
+DOS COSAS A RESOLVER AL DISEÑARLO: (a) qué queda expandido por defecto — apuesta: el día
+más reciente abierto y el resto plegado, porque si todo arranca plegado la página no
+muestra ni un titular sin clic; (b) dentro de cada día ya viven otros dos despliegues (el
+historial de capturas por artículo y el modal del día): **tres niveles anidados confunden**,
+hay que decidir cuál se sacrifica.
+VENTAJA DE CALENDARIO: es frontend puro, **no consume un solo minuto de Actions**. Se puede
+hacer entero con el presupuesto de CI seco.
+
+### 2026-08-23 — Que el frontend resuelva los días por `dia_key`, no por `story_id`
+El backend ancló `resumenes_dia` a `dia_key` (hash de contenido inmutable) precisamente
+para que sobreviva al churn de sid — fue la Opción A de la migración 000018. Pero el
+FRONTEND consulta por `story_id`, o sea reintroduce la dependencia de la etiqueta volátil
+que el backend desacopló a propósito. Si la página calculara `dia_key` a partir de los
+hashes de los artículos que YA carga, las filas huérfanas seguirían mostrándose y la
+migración de uuid dejaría de importar para la vista.
+NO SE RECOMIENDA TODAVÍA: obligaría a replicar en JS la lógica exacta de
+`filtrar_comparables` (tipo=noticia) y `_colapsar_por_url_dia`, y duplicar lógica de
+backend en el frontend es exactamente lo que produjo el doble-cómputo del título
+(2026-06-21). Es la solución más robusta de las dos, y la más cara de mantener. Decidir en
+frío, contra la alternativa de enganchar Fase 3 al cron, que no duplica nada.
+
+### 2026-08-23 — Repo público como decisión de proyecto, no solo de CI
+Hacer público `Mr-JotA-94/trama` resolvería el presupuesto de Actions de un golpe, pero la
+decisión es más grande que eso: alinea con la disclosure del método que Arquitectura ya
+declara como principio (publicar veredictos de IA sobre opacidad mediática sin revelar el
+método sería la misma opacidad que Trama critica), y engancha con la idea de difusión de
+2026-08-10 —cuyo prerrequisito, los títulos obsoletos, quedó mitigado con la síntesis del
+día bajo el título—. Contras a pensar antes: exponer el pipeline permite que un medio
+optimice contra él, y el repo pasa a ser criticable públicamente antes de que la calidad
+del análisis esté auditada a escala. No es solo un ahorro de minutos.
+
 
 ### 2026-08-10 — Digest de arco (resumen general de la historia, NO confundir con lo retirado)
 Distinto de la corroboración-por-clúster que se RETIRÓ esta sesión. IDEA: una síntesis DE LAS

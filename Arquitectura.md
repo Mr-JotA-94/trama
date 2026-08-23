@@ -47,7 +47,7 @@ hecho lado a lado, qué omitió cada medio y qué técnica usó. Decido con evid
 | Crawler | Python + httpx + trafilatura | corre en GitHub Actions cada 6h |
 | Base de datos | Supabase (Postgres + pgvector) | región São Paulo |
 | Embeddings | sentence-transformers multilingüe | Fase 2, local, gratis |
-| Análisis IA | Fase 3 — Llama 3.3 70B | DeepInfra primario / NIM fallback / Groq deprecado. Es una línea. |
+Fase 3 — GLM-5.2 vía OpenRouter (routing forense DeepInfra→Cloudflare→Baidu). Detalle en §5.
 | Frontend | Next.js 14 (App Router) en Vercel | Server Components, solo lectura |
 | Inmutabilidad | hashes SHA-256 + log append-only | Polygon opcional Fase 4 |
 | Jobs | GitHub Actions cron | gratis |
@@ -90,6 +90,8 @@ Migraciones aplicadas (en supabase/migrations/):
    esquema correcto, uuid, scores y anclas) · 9. rls_lectura_stories (policy de
    SELECT público para stories/story_articles; nacieron con RLS activo pero sin
    policy → la web veía cero filas en silencio. Ver BITACORA 2026-06-17).
+
+19. rls_lectura_resumenes_dia (policy de SELECT pública; la tabla nació con RLS activo y sin policy — mismo hueco que 000009, ver BITACORA 2026-08-22).
 
 ---
 
@@ -422,7 +424,7 @@ El cuerpo del artículo se extrae según el campo outlets.extraccion:
   cola de boletines) como materia prima limpia para el clustering.
 - **'trafilatura':** solo trafilatura. Medios: Vorágine (no expone JSON-LD),
   Las2orillas (no expone articleBody). Trafilatura ya los extrae limpio.
-Título, subtítulo, autor y fecha SIEMPRE salen de trafilatura/meta; articleBody
+Título, subtítulo y autor salen de trafilatura/meta; articleBody aporta solo el cuerpo. La FECHA ya no (2026-08-23): campo("date") de trafilatura devuelve solo fecha vía htmldate, sin hora, lo que anclaba todo el archivo a medianoche UTC. Se resuelve por cadena ordenada: JSON-LD datePublished → <meta article:published_time> → trafilatura como piso. Sin offset explícito la fecha se descarta y cae a la fuente siguiente; la procedencia se cuenta y se imprime al cierre de cada corrida; articleBody
 aporta solo el cuerpo. Trafilatura sigue siendo el piso: articleBody que falte o
 falle cae a trafilatura (degradación elegante). Al agregar un medio nuevo:
 diagnosticar su articleBody y fijar el bucket explícito antes de admitirlo.
@@ -432,10 +434,8 @@ Entidades + embeddings + clustering + vista del hilo rojo. Integrar Colombia+20 
 La Silla Vacía DESPUÉS de validar el clustering con los 5 actuales.
 El clustering aplica Louvain (res 1.6, seed fijo) a todo componente >50 artículos, partiendo beats políticos de semanas en sub-hechos legibles. Validado 2026-08-08 (ver BITACORA). El grafo story_relations distingue ahora tipo: tematica (motor n_especificas + guardia coseno, oculto hasta re-backfill de NER) y misma_trama (subhistorias hermanas del mismo componente padre, verdad mecánica sin umbral, exento del bloqueo NER, expuesto en front).
 
-### FASE 3 — El análisis de persuasión
-Pipeline NVIDIA NIM por clúster (≥3 medios), resaltador ámbar, resumen neutral, perfiles
-de medios (sobre columnas ya reservadas; cada dato con fuente citable). Integrar
-Semana, Caracol/W Radio, RTVC.
+### FASE 3 — El análisis
+Análisis de Fase 3 (implementado 2026-08-22). El bloque de "análisis de persuasión" se RETIRÓ de la vista: el carril per-artículo está cerrado y medido (§5), no hay dato que mostrar y rotular la comparación inter-medio como "persuasión" sería publicar la acusación que el proyecto decidió no hacer. En su lugar: síntesis del día más reciente bajo el título (mitiga el título obsoleto), y sección "Lo que reportaron los medios" con dos niveles de confianza — corroborado por 2+ medios (--verificado) y aparece-en-un-solo-medio (--resaltador, token reasignado al morir su reserva original). Los días NO se fusionan en la vista: cada bloque va rotulado con su fecha, porque agregar entre días reintroduce la deriva causal que el troceo por día eliminó. El detalle de cada día vive en un modal <dialog> — única excepción al principio cero-JS, justificada porque un modal bloquea la lectura y ahí la accesibilidad de teclado es load-bearing.
 
 ### FASE 4 — Comunidad e inmutabilidad fuerte
 Auth, anotaciones (voto a la anotación, no al medio), reputación de anotadores,

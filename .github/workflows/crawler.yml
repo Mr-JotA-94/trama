@@ -6,8 +6,9 @@
 # datacenter y algunos medios podrían bloquearlas (ya vimos 403 desde el
 # entorno de Anthropic). La primera corrida manual nos dirá la verdad.
 #
-# Cadena de tres jobs encadenados vía needs: crawl → backfill → clustering.
-#  - crawl: ingesta de los 5 medios.
+# Cadena de CUATRO jobs encadenados vía needs:
+#   crawl → backfill → clustering → revincular
+#  - crawl: ingesta de los 7 medios del banco.
 #  - backfill: entidades + embedding. Idempotente (WHERE embedding IS NULL): si
 #    falla, se re-corre solo en la siguiente vuelta sin daño. NO toca stories ni
 #    contenido/hash.
@@ -16,6 +17,13 @@
 #    al clúster. Si backfill falla, no corre (no hay embeddings nuevos que agrupar;
 #    el banco viejo espera sin daño). Recompute completo ~2 min, dominado por I/O
 #    a Supabase, no por cómputo (el O(n²) es instantáneo a esta escala).
+#  - revincular: repara las filas de resumenes_dia que la poda del clustering
+#    dejó con story_id NULL. Ver el comentario del job.
+#
+# OJO CON EL CRON: GitHub deshabilita los workflows con `schedule` tras 60 días
+# sin actividad en el repo, y avisa sólo por mail. Si eso pasa, el crawler deja
+# de correr y las notas que el feed rota no vuelven nunca — categoría "pérdida
+# permanente de archivo". Mientras haya commits regulares no aplica.
 name: crawler
 on:
   schedule:
@@ -94,3 +102,38 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python clustering_fase2.py
+  # Repara las filas de resumenes_dia que la poda de stories dejó con story_id
+  # NULL. El análisis ya está pagado; sin esto queda invisible en la web.
+  #
+  # `needs: clustering` NO es una preferencia de orden, es una condición de
+  # corrección: revincular_huerfanas.py lee story_articles, y
+  # clustering_fase2.reescribir_stories() BORRA ESA TABLA ENTERA antes de
+  # reconstruirla. Corriendo en paralelo leería una tabla vacía y concluiría que
+  # ninguna huérfana tiene story actual — un no-op silencioso, que es la peor
+  # clase de falla. Con `needs` sólo arranca si el clustering terminó OK.
+  #
+  # Barato a propósito: sólo lee y escribe Supabase. Sin torch, sin LLM, sin
+  # modelos. Segundos, no minutos.
+  revincular:
+    needs: clustering
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias (mínimas)
+        run: pip install supabase python-dotenv
+      - name: Re-vincular huérfanas de resumenes_dia
+        working-directory: crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PYTHONUNBUFFERED: "1"
+        # --verbose imprime cada fila NO re-vinculada y su motivo. Es el único
+        # registro de por qué una huérfana sigue huérfana: sin esto, el conteo
+        # de "repartidas" crecería sin que nadie sepa cuáles ni por qué.
+        run: python revincular_huerfanas.py --aplicar --verbose
