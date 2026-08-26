@@ -19,6 +19,8 @@
 #    a Supabase, no por cómputo (el O(n²) es instantáneo a esta escala).
 #  - revincular: repara las filas de resumenes_dia que la poda del clustering
 #    dejó con story_id NULL. Ver el comentario del job.
+#  - fase3: análisis LLM. NO corre en las cuatro vueltas — sólo en la de las
+#    06:00 UTC. Ver el comentario del job.
 #
 # OJO CON EL CRON: GitHub deshabilita los workflows con `schedule` tras 60 días
 # sin actividad en el repo, y avisa sólo por mail. Si eso pasa, el crawler deja
@@ -27,9 +29,20 @@
 name: crawler
 on:
   schedule:
-    # Cada 6 horas (UTC). Colombia es UTC-5: corre ~01:00, 07:00, 13:00, 19:00 hora CO.
-    - cron: "0 0,6,12,18 * * *"
-  workflow_dispatch: {}   # botón "Run workflow" para corridas manuales
+    # DOS entradas de cron, no una, y es a propósito: `github.event.schedule`
+    # devuelve el string del cron que disparó la corrida, así que partirlas es
+    # la única forma de que un job distinga en cuál de las cuatro vueltas está.
+    # Con el cron unificado "0 0,6,12,18 * * *" las cuatro se ven idénticas.
+    # Colombia es UTC-5.
+    - cron: "0 0,12,18 * * *"   # 19:00, 07:00 y 13:00 hora CO — sin Fase 3
+    - cron: "0 6 * * *"         # 01:00 hora CO — ésta SÍ corre Fase 3
+  workflow_dispatch:
+    inputs:
+      correr_fase3:
+        description: "Correr también el análisis de Fase 3 (gasta LLM)"
+        required: false
+        default: false
+        type: boolean
 jobs:
   crawl:
     runs-on: ubuntu-latest
@@ -137,3 +150,51 @@ jobs:
         # registro de por qué una huérfana sigue huérfana: sin esto, el conteo
         # de "repartidas" crecería sin que nadie sepa cuáles ni por qué.
         run: python revincular_huerfanas.py --aplicar --verbose
+
+  # Análisis LLM de Fase 3 sobre las historias activas de las últimas 24 h.
+  #
+  # POR QUÉ UNA VEZ AL DÍA Y NO CUATRO: es el único job que cuesta dinero
+  # (~$0,062 por día denso corroborado). Medido el 2026-08-24: una vuelta del
+  # pipeline con ~1 h de material nuevo regeneró 2 días. Eso NO autoriza a
+  # correrlo 4×/día — se midió con una hora de material, no seis, así que es
+  # cota inferior. Una vuelta diaria acota el gasto mientras se acumula la
+  # medición real. Subir a más vueltas es una decisión posterior CON el dato.
+  #
+  # POR QUÉ `needs: revincular` Y NO `needs: clustering`: revincular recupera
+  # días que ya estaban analizados y pagados. Si Fase 3 corriera antes, los
+  # regeneraría pagando LLM de nuevo. Medido en el mismo experimento: revincular
+  # recuperó 12 días que Fase 3 habría vuelto a pagar. El orden es económico,
+  # no cosmético.
+  #
+  # ⚠️ EL `if` COMPARA EL STRING DEL CRON CARÁCTER POR CARÁCTER. Si algún día
+  # editás "0 6 * * *" arriba y no acá, este job deja de correr EN SILENCIO —
+  # sin error, sin log, sin nada. Los dos valores se cambian juntos o no se
+  # cambia ninguno. Verificación: en Actions, la corrida de las 06:00 UTC debe
+  # mostrar cinco jobs; las otras tres, cuatro.
+  fase3:
+    needs: revincular
+    if: github.event.schedule == '0 6 * * *' || inputs.correr_fase3
+    runs-on: ubuntu-latest
+    timeout-minutes: 70          # colchón sobre el presupuesto de 3600s
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar deps mínimas de Fase 3
+        run: pip install requests python-dotenv supabase
+      - name: Analizar historias activas (24h)
+        working-directory: crawler
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        # --presupuesto 3600 (1h) en vez de los 19800 del backfill manual: corriendo
+        # a diario no debería haber backlog. Si lo hay, corta limpio y lo retoma
+        # mañana — el caché por dia_key hace que no repita lo ya guardado. Es una
+        # cota de TIEMPO, no de dinero: un tope explícito de días guardados sería
+        # la cota real y va a Ideas, no acá.
+        run: python analisis_fase3.py --backfill --horas 24 --presupuesto 3600
