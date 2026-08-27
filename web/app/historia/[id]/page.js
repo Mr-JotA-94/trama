@@ -123,44 +123,30 @@ function separadorDiaCO(ts) {
 // NO se recalcula acá a propósito: el guard de medianoche vive en UN solo lugar
 // del lado del servidor. Reimplementarlo en JS metería una tercera copia de una
 // lógica que ya mordió dos veces, en la capa donde peor se audita.
-function diaDeArticulo(a) {
-  return a.dia_publicacion ? String(a.dia_publicacion).slice(0, 10) : null;
-}
-
-// Construye el hilo desde la UNIÓN de (días con artículos ∪ días con análisis).
+// Agrupa el hilo por día de publicación. NADA de unión con resumenes_dia:
+// tras la fase 0 de revincular, un análisis vinculado a esta historia siempre
+// tiene notas en esta historia, y los chips "Análisis por día" siguen siendo la
+// enumeración completa de `dias` mientras esa garantía no esté rodada.
 //
-// POR QUÉ UNIÓN Y NO EMPAREJAMIENTO (medido 2026-08-26): con el separador
-// emparejando contra resumenPorDia, 11 análisis de 280 no encontraban día en el
-// hilo y su botón simplemente no se dibujaba. Un emparejamiento tiene que
-// acertar; una unión no puede perder. Consecuencia estructural: el conjunto de
-// días del hilo CONTIENE a `dias` por construcción, no por medición — y eso es
-// lo que autoriza (en una unidad posterior, no en esta) a retirar los chips.
-//
-// Devuelve también `sinDia` para que la degradación sea VISIBLE: un artículo sin
-// dia_publicacion no se descarta en silencio.
-function construirHiloUnificado(articulosDesc, dias) {
+// `sinDia` se conserva: la ruta de degradación se REPORTA, no se descarta en
+// silencio (si la vista articles_dia no está aplicada o colapsarCluster deja de
+// propagar el campo, hay que verlo).
+function construirHiloPorDia(articulosDesc) {
   const porDia = new Map();
   const sinDia = [];
 
   for (const a of articulosDesc) {
-    const d = diaDeArticulo(a);
+    const d = a.dia_publicacion ? String(a.dia_publicacion).slice(0, 10) : null;
     if (!d) { sinDia.push(a); continue; }
     if (!porDia.has(d)) porDia.set(d, []);
     porDia.get(d).push(a);
   }
 
-  const claves = new Set([
-    ...porDia.keys(),
-    ...dias.map((d) => claveDiaResumen(d.dia)),
-  ]);
+  const bloques = [...porDia.keys()]
+    .sort((x, y) => (x < y ? 1 : x > y ? -1 : 0))   // desc; yyyy-mm-dd ordena solo
+    .map((clave) => ({ clave, articulos: porDia.get(clave) }));
 
-  // Descendente por clave ISO (yyyy-mm-dd ordena lexicográficamente = cronológicamente).
-  const ordenadas = [...claves].sort((x, y) => (x < y ? 1 : x > y ? -1 : 0));
-
-  return {
-    bloques: ordenadas.map((clave) => ({ clave, articulos: porDia.get(clave) ?? [] })),
-    sinDia,
-  };
+  return { bloques, sinDia };
 }
 
 // Rango + duración del clúster para el encabezado, ej. "Del 16 al 21 de julio
@@ -562,16 +548,13 @@ function NodoHilo({ a }) {
 }
 
 // Un día del hilo: su encabezado, su botón de análisis si existe, y sus notas.
-//
-// EL CASO NUEVO (articulos.length === 0) es la contrapartida de la unión: un día
-// puede tener análisis y no tener notas en ESTA historia — el clustering
-// re-particiona en cada corrida y una nota puede haber quedado en otro clúster.
-// Se dice explícitamente en vez de dibujar un separador huérfano: para una
-// hemeroteca forense, que el agrupamiento se movió ES información, no un defecto
-// que esconder.
 function BloqueDia({ bloque, resumen, nombrePorSlug }) {
   const { clave, articulos } = bloque;
-  const nMedios = (resumen?.medios ?? []).length;
+  // Notas Y medios contados del MISMO lugar: lo que se ve debajo del separador.
+  // Contarlos de fuentes distintas producía "2 notas · 3 medios" sobre un día que
+  // mostraba dos notas de dos medios. El resumen puede cubrir otra composición;
+  // eso se resuelve invalidando el vínculo en el backend, no narrándolo acá.
+  const nMedios = new Set(articulos.map((a) => a.medio_slug)).size;
 
   return (
     <>
@@ -579,7 +562,7 @@ function BloqueDia({ bloque, resumen, nombrePorSlug }) {
         <span className="hilo-separador-texto">{fechaLargaDesdeClave(clave)}</span>
         <span className="hilo-separador-conteo">
           {articulos.length} {articulos.length === 1 ? "nota" : "notas"}
-          {nMedios > 0 && ` · ${nMedios} ${nMedios === 1 ? "medio" : "medios"}`}
+          {" · "}{nMedios} {nMedios === 1 ? "medio" : "medios"}
         </span>
         {resumen && (
           <ModalDia
@@ -591,14 +574,7 @@ function BloqueDia({ bloque, resumen, nombrePorSlug }) {
         )}
       </li>
 
-      {articulos.length === 0 ? (
-        <li className="hilo-dia-vacio gris-archivo">
-          Hay análisis de este día, pero sus notas ya no están en esta historia:
-          una corrida posterior del agrupamiento las reasignó.
-        </li>
-      ) : (
-        articulos.map((a) => <NodoHilo key={a.url} a={a} />)
-      )}
+      {articulos.map((a) => <NodoHilo key={a.url} a={a} />)}
     </>
   );
 }
@@ -703,6 +679,7 @@ export default async function Historia({ params }) {
   const secundarias = articulos.filter((a) => !a.es_ancla);
   const labels      = etiquetarAnclas(articulos);
   const articulosDesc = [...articulos].reverse();
+  const { bloques, sinDia } = construirHiloPorDia(articulosDesc);
 
   // ── Q3: historias conectadas (story_relations, espejo dirigido) ──
   const { data: relRows } = await supabase
@@ -833,8 +810,6 @@ export default async function Historia({ params }) {
   // abajo lista SIEMPRE los días completos. Si el matching falla, no se pierde ni
   // un día de análisis; solo se pierde el atajo. Fallar en silencio no es opción.
   const resumenPorDia = new Map(dias.map((d) => [claveDiaResumen(d.dia), d]));
-
-  const { bloques, sinDia } = construirHiloUnificado(articulosDesc, dias);
 
   const hechosRecientes = diaReciente?.hechos_corroborados ?? [];
   const unicosRecientes = diaReciente?.solo_un_medio ?? [];

@@ -497,14 +497,6 @@ a { color: inherit; }
 .hilo-separador-dia:first-child { padding-top: 0; }
 .hilo-separador-dia:first-child::before { top: 7px; }
 
-/* Día del hilo con análisis pero sin notas en ESTA historia (unión, no
-   emparejamiento): el clustering re-particionó y las notas quedaron en otro
-   clúster. Se dice explícito, sin marcador de nodo (no es un hito real). */
-.hilo-dia-vacio {
-  padding: 4px 0 14px 8px;
-  font-style: italic;
-}
-
 /* ---- Índice de trama (hermanas del beat-split, story_relations
    tipo='misma_trama') --------------------------------------------------
    Firma visual: el hilo rojo un nivel arriba del hilo cronológico de
