@@ -19,7 +19,6 @@
 //    previa y el "ver más". Se extrajo a <NodoHilo>. Presentación pura, sin cambio
 //    de comportamiento; se hace ahora porque agregar el botón de día en dos copias
 //    es exactamente cómo se desincronizan.
-import { Fragment } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -120,18 +119,34 @@ function separadorDiaCO(ts) {
   return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
 
-// Empareja cada artículo del hilo con su separador de día (null si cae el
-// mismo día-calendario Bogotá que el artículo anterior). El primero siempre
-// lleva separador. Devuelve también la CLAVE del día, para poder colgar el
-// análisis de Fase 3 del separador correspondiente cuando exista.
-function construirHilo(articulos) {
-  let diaAnterior = null;
-  return articulos.map((a) => {
-    const dia = claveDiaCO(a.fecha_primera_captura);
-    const separador = dia !== diaAnterior ? separadorDiaCO(a.fecha_primera_captura) : null;
-    diaAnterior = dia;
-    return { articulo: a, separador, diaKey: dia };
-  });
+// Día de publicación del artículo, YA CALCULADO POR LA BASE (vista articles_dia).
+// NO se recalcula acá a propósito: el guard de medianoche vive en UN solo lugar
+// del lado del servidor. Reimplementarlo en JS metería una tercera copia de una
+// lógica que ya mordió dos veces, en la capa donde peor se audita.
+// Agrupa el hilo por día de publicación. NADA de unión con resumenes_dia:
+// tras la fase 0 de revincular, un análisis vinculado a esta historia siempre
+// tiene notas en esta historia, y los chips "Análisis por día" siguen siendo la
+// enumeración completa de `dias` mientras esa garantía no esté rodada.
+//
+// `sinDia` se conserva: la ruta de degradación se REPORTA, no se descarta en
+// silencio (si la vista articles_dia no está aplicada o colapsarCluster deja de
+// propagar el campo, hay que verlo).
+function construirHiloPorDia(articulosDesc) {
+  const porDia = new Map();
+  const sinDia = [];
+
+  for (const a of articulosDesc) {
+    const d = a.dia_publicacion ? String(a.dia_publicacion).slice(0, 10) : null;
+    if (!d) { sinDia.push(a); continue; }
+    if (!porDia.has(d)) porDia.set(d, []);
+    porDia.get(d).push(a);
+  }
+
+  const bloques = [...porDia.keys()]
+    .sort((x, y) => (x < y ? 1 : x > y ? -1 : 0))   // desc; yyyy-mm-dd ordena solo
+    .map((clave) => ({ clave, articulos: porDia.get(clave) }));
+
+  return { bloques, sinDia };
 }
 
 // Rango + duración del clúster para el encabezado, ej. "Del 16 al 21 de julio
@@ -261,11 +276,13 @@ function ContenidoDia({ resumen, nombrePorSlug }) {
   const hechos = resumen.hechos_corroborados ?? [];
   const unicos = resumen.solo_un_medio ?? [];
   const medios = resumen.medios ?? [];
+  const nArts  = (resumen.article_ids ?? []).length;
 
   return (
     <div className="dia-contenido">
       <p className="dia-medios-fila">
-        {medios.length} {medios.length === 1 ? "medio cubrió" : "medios cubrieron"} este día:{" "}
+        {nArts > 0 && <>{nArts} {nArts === 1 ? "nota" : "notas"} de </>}
+        {medios.length} {medios.length === 1 ? "medio" : "medios"} este día:{" "}
         {medios.map((m) => (
           <Medio key={m} slug={m} nombrePorSlug={nombrePorSlug} />
         ))}
@@ -530,21 +547,35 @@ function NodoHilo({ a }) {
   );
 }
 
-// Separador de día del hilo. Si existe análisis de Fase 3 para ESE día-calendario,
-// cuelga el botón que abre el modal, justo al lado de la fecha.
-function SeparadorHilo({ texto, resumen, nombrePorSlug }) {
+// Un día del hilo: su encabezado, su botón de análisis si existe, y sus notas.
+function BloqueDia({ bloque, resumen, nombrePorSlug }) {
+  const { clave, articulos } = bloque;
+  // Notas Y medios contados del MISMO lugar: lo que se ve debajo del separador.
+  // Contarlos de fuentes distintas producía "2 notas · 3 medios" sobre un día que
+  // mostraba dos notas de dos medios. El resumen puede cubrir otra composición;
+  // eso se resuelve invalidando el vínculo en el backend, no narrándolo acá.
+  const nMedios = new Set(articulos.map((a) => a.medio_slug)).size;
+
   return (
-    <li className="hilo-separador-dia">
-      <span className="hilo-separador-texto">{texto}</span>
-      {resumen && (
-        <ModalDia
-          etiquetaBoton="Hechos del día"
-          tituloModal={fechaLargaDesdeClave(claveDiaResumen(resumen.dia))}
-        >
-          <ContenidoDia resumen={resumen} nombrePorSlug={nombrePorSlug} />
-        </ModalDia>
-      )}
-    </li>
+    <>
+      <li className="hilo-separador-dia">
+        <span className="hilo-separador-texto">{fechaLargaDesdeClave(clave)}</span>
+        <span className="hilo-separador-conteo">
+          {articulos.length} {articulos.length === 1 ? "nota" : "notas"}
+          {" · "}{nMedios} {nMedios === 1 ? "medio" : "medios"}
+        </span>
+        {resumen && (
+          <ModalDia
+            etiquetaBoton="Hechos del día"
+            tituloModal={fechaLargaDesdeClave(clave)}
+          >
+            <ContenidoDia resumen={resumen} nombrePorSlug={nombrePorSlug} />
+          </ModalDia>
+        )}
+      </li>
+
+      {articulos.map((a) => <NodoHilo key={a.url} a={a} />)}
+    </>
   );
 }
 
@@ -610,8 +641,8 @@ export default async function Historia({ params }) {
 
   if (urls.length) {
     const { data: historial, error: errH } = await supabase
-      .from("articles")
-      .select("id, url, titulo, subtitulo, fecha_captura, es_parcial, tipo, seccion, hash_sha256")
+      .from("articles_dia")
+      .select("id, url, titulo, subtitulo, fecha_captura, es_parcial, tipo, seccion, hash_sha256, dia_publicacion")
       .in("url", urls);
 
     if (!errH && historial?.length) {
@@ -622,6 +653,7 @@ export default async function Historia({ params }) {
           return {
             article_id:        c.id,
             url:               c.url,
+            dia_publicacion:   c.dia_publicacion,
             medio_slug:        m.medio_slug,
             medio_nombre:      m.medio_nombre,
             hash_sha256:       c.hash_sha256,
@@ -647,7 +679,7 @@ export default async function Historia({ params }) {
   const secundarias = articulos.filter((a) => !a.es_ancla);
   const labels      = etiquetarAnclas(articulos);
   const articulosDesc = [...articulos].reverse();
-  const hilo          = construirHilo(articulosDesc);
+  const { bloques, sinDia } = construirHiloPorDia(articulosDesc);
 
   // ── Q3: historias conectadas (story_relations, espejo dirigido) ──
   const { data: relRows } = await supabase
@@ -758,7 +790,7 @@ export default async function Historia({ params }) {
   // absoluto — se traen todos los días de la historia y se ordenan en la base.
   const { data: resumenesDia } = await supabase
     .from("resumenes_dia")
-    .select("dia, sintesis, hechos_corroborados, solo_un_medio, medios, modelo, prompt_version")
+    .select("dia, sintesis, hechos_corroborados, solo_un_medio, medios, article_ids, modelo, prompt_version")
     .eq("story_id", story.id)
     .order("dia", { ascending: false });
 
@@ -933,38 +965,63 @@ export default async function Historia({ params }) {
       {/* ── HILO CRONOLÓGICO ── */}
       <section className="historia-seccion">
         <h2 className="seccion-titulo">Línea de tiempo</h2>
-        <ol className={`hilo-cronologico${articulos.length > 3 ? " hilo-preview-fade" : ""}`}>
-          {hilo.slice(0, 3).map(({ articulo: a, separador, diaKey }) => (
-            <Fragment key={a.url}>
-              {separador && (
-                <SeparadorHilo
-                  texto={separador}
-                  resumen={resumenPorDia.get(diaKey)}
-                  nombrePorSlug={nombrePorSlug}
-                />
-              )}
-              <NodoHilo a={a} />
-            </Fragment>
+        {/* NOTA DE ALCANCE — redactada A PROPÓSITO sin porcentaje.
+            El primer borrador decía "el 95% del archivo no trae hora". Es cierto
+            hoy y será falso pronto: medido 2026-08-26, el 98,95% de lo capturado
+            en los últimos 3 días SÍ trae hora (el PR #19 funciona), y el corpus
+            cruza el 50% con hora hacia finales de octubre. Una cifra que envejece
+            en semanas no va en el código. Además engañaría: el 95% describe el
+            archivo entero, pero en una historia RECIENTE la proporción sin hora
+            es ~1%. */}
+        <p className="seccion-alcance">
+          Agrupada por día de publicación del medio. Las horas mostradas son de
+          captura de Trama, no de publicación: buena parte del archivo histórico
+          no trae hora, solo fecha.
+        </p>
+
+        <ol className={`hilo-cronologico${bloques.length > 1 ? " hilo-preview-fade" : ""}`}>
+          {bloques.slice(0, 1).map((b) => (
+            <BloqueDia
+              key={b.clave}
+              bloque={b}
+              resumen={resumenPorDia.get(b.clave)}
+              nombrePorSlug={nombrePorSlug}
+            />
           ))}
         </ol>
-        {articulos.length > 3 && (
+
+        {bloques.length > 1 && (
           <details className="timeline-mas">
-            <summary>Ver {articulos.length - 3} momentos más</summary>
+            <summary>
+              Ver {bloques.length - 1} {bloques.length - 1 === 1 ? "día más" : "días más"}
+            </summary>
             <ol className="hilo-cronologico">
-              {hilo.slice(3).map(({ articulo: a, separador, diaKey }) => (
-                <Fragment key={a.url}>
-                  {separador && (
-                    <SeparadorHilo
-                      texto={separador}
-                      resumen={resumenPorDia.get(diaKey)}
-                      nombrePorSlug={nombrePorSlug}
-                    />
-                  )}
-                  <NodoHilo a={a} />
-                </Fragment>
+              {bloques.slice(1).map((b) => (
+                <BloqueDia
+                  key={b.clave}
+                  bloque={b}
+                  resumen={resumenPorDia.get(b.clave)}
+                  nombrePorSlug={nombrePorSlug}
+                />
               ))}
             </ol>
           </details>
+        )}
+
+        {/* RUTA DE DEGRADACIÓN, REPORTADA. Una defensa que falla en silencio es
+            peor que el bug: si la vista articles_dia no está aplicada o
+            colapsarCluster no propaga el campo, estas notas se quedarían fuera
+            del hilo sin que nadie lo note. */}
+        {sinDia.length > 0 && (
+          <>
+            <p className="gris-archivo">
+              {sinDia.length} {sinDia.length === 1 ? "nota" : "notas"} sin día de
+              publicación resuelto. Se listan aparte para no omitirlas.
+            </p>
+            <ol className="hilo-cronologico">
+              {sinDia.map((a) => <NodoHilo key={a.url} a={a} />)}
+            </ol>
+          </>
         )}
       </section>
 

@@ -1216,6 +1216,11 @@ a.trama-titulo:hover { text-decoration: underline; text-decoration-color: var(--
   color: var(--tinta);
   flex-shrink: 0;
 }
+.hilo-separador-conteo {
+  font-family: var(--f-mono), monospace;
+  font-size: 0.72rem;
+  color: var(--gris-archivo);
+}
 
 .dia-boton {
   font-family: var(--f-mono), monospace;

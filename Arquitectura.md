@@ -218,6 +218,27 @@ sub-hechos que un colapso 1-por-medio perdía. La síntesis única y la corrobor
 clúster quedan retiradas/a-retirar. El gate mecánico valida procedencia; la robustez del
 modelo (con contexto completo) es lo que evita la fabricación, no la restricción del input.
 
+### Enganche al pipeline y re-vinculación (2026-08-26)
+Fase 3 dejó de ser manual: es el 5º job de `crawler.yml`, encadenado
+`crawl → backfill → clustering → revincular → fase3`, y corre 1×/día (06:00 UTC).
+La decisión de frecuencia es de COSTO, no de diseño: es el único job que gasta
+dinero, y su gasto se acumula como medición antes de subirla.
+
+Componente nuevo, `crawler/revincular_huerfanas.py`: repara filas de
+`resumenes_dia` con `story_id NULL`. Cierra un hueco del diseño original —
+`resumenes_dia` se ancló a `dia_key` (hash de contenido) para sobrevivir al churn
+de sid, pero la adopción por `dia_key` sólo rescata composiciones IDÉNTICAS. La
+re-vinculación resuelve por PERTENENCIA de los artículos, que sobrevive al cambio
+de composición.
+
+Criterio: CONTENCIÓN TOTAL. Un día repartido entre clústeres NO se re-vincula —
+ese análisis ya no describe a ninguna historia, y colgárselo al clúster
+mayoritario metería en un expediente hechos corroborados con material de otro.
+Es el mismo principio que el gate verbatim: antes de publicar de más, no publicar.
+
+Su posición en la cadena es económica: `needs: revincular` en `fase3` evita que
+Fase 3 regenere pagando LLM días que la re-vinculación recupera gratis.
+
 ### Inmutabilidad: evidencia vs. análisis derivado
 La regla "fila nueva, nunca UPDATE" aplica a `articles` (el archivo forense: evidencia con valor
 probatorio). NO aplica a los derivados LLM (`comparaciones`, `resumenes_dia`), que son caché

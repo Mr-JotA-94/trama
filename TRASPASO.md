@@ -1,8 +1,9 @@
 # TRASPASO — Estado volátil de Trama
-> Última actualización: 2026-08-23 (cierre. PR #18 frontend de Fase 3 y PR #19 hora de
-> publicación MERGEADOS a main y en producción. Aparecen DOS restricciones nuevas que
-> reordenan la cola: presupuesto de GitHub Actions casi agotado, y el análisis de Fase 3
-> se desvincula solo entre corridas del clustering.)
+> Última actualización: 2026-08-26 (cierre. Repo PÚBLICO con claves rotadas. Módulo
+> `revincular_huerfanas.py` en producción como 4º job del pipeline. Fase 3 enganchada al
+> cron como 5º job, 1×/día. Se REFUTA con datos la premisa de que "el cron de Fase 3 es el
+> arreglo del desvinculado". Aparece una restricción nueva con reloj: el free tier de
+> Supabase.)
 > Autoridad: este archivo manda sobre memoria. Estado volátil vive AQUÍ.
 
 ## Quién soy y cómo trabajamos
@@ -22,23 +23,37 @@ Soy Jota (Johan). Claude es "Claudio". Reglas que NO se pierden:
   Colombiano (regex que exigía `\d{2}` contra un medio sin padding), y el "12/12 con
   timestamp de plantilla" de RTVC (muestreo sin dedup por URL). **Corolario: un número
   que asusta de más suele ser el medidor, no el fenómeno.**
+- **[2026-08-26] WebFetch CONFIRMA PRESENCIA, NUNCA AUSENCIA.** Pasa el archivo por un
+  modelo pequeño que resume: preguntado "¿existe el job revincular?" contestó "no existe"
+  sobre un `crawler.yml` que sí lo tenía. Un "no está" de esa herramienta NO es evidencia.
+  Para verificar ausencia: leer local, o pedir transcripción literal y desconfiar.
 - **PRESENCIA ≠ CORRECCIÓN, y CORRECCIÓN ≠ SOSPECHA.** El `+00:00` de La Silla se veía
   mal y estaba bien (medido); el 18/18 de RTVC se veía bien y podía estar mal. Las dos
-  direcciones se miden, ninguna se supone.
-- **[2026-08-23] Verificar PRESENCIA no es verificar el MECANISMO.** Claude Code atribuyó
-  las huérfanas a un "DELETE+INSERT de toda la tabla stories" que NO existe (el código
-  hace UPSERT + poda acotada desde 2026-07-05). El síntoma era real, la causa no, y la
-  causa es lo que decide el arreglo. Leer el código antes de aceptar un diagnóstico.
+  direcciones se miden, ninguna se supone. **[2026-08-26] MORDIÓ AL REVÉS:** la presencia
+  de `astimezone(BOGOTA)` en el grep se leyó como bug vivo. Era la rama `else` del guard
+  que `26a10eb` ya había agregado. Presencia de una línea ≠ ejecución de esa línea.
+- **[2026-08-23] Verificar PRESENCIA no es verificar el MECANISMO.** CORREGIDO EL
+  2026-08-26: Claude Code había reportado un "DELETE+INSERT de toda la tabla". Para
+  `stories` era falso (poda acotada). Pero `story_articles` SÍ se borra entera cada
+  corrida. Acertó el mecanismo, erró la tabla.
 - **Antes de culpar al código, descartar el entorno.**
-- **Ver el crudo ANTES de fijar el fix.** MORDIÓ: la deuda "resumenes_dia.dia es TIMESTAMP"
-  (registrada dos veces) era FALSA —es `date`— y escondió el corrimiento de día diez días.
+- **Ver el crudo ANTES de fijar el fix.**
 - **[2026-08-23] Una fecha sin hora NO tiene zona horaria que convertir.**
 - **[2026-08-23] Deuda DERIVADA vs PÉRDIDA PERMANENTE DE ARCHIVO — regla de priorización.**
   Casi toda la deuda de Trama es derivada y regenerable; posponerla es barato. La que toca
   el ARCHIVO no: lo que no se captura hoy no se recupera nunca. **Ante dos deudas de
-  impacto parecido, gana la que pierde archivo.** Aplica también al recorte de CI.
-- **[2026-08-23] Defensas que fallan en silencio son peores que el bug.** RLS sin policy;
-  un parseo que cae al fallback sin loguear. Toda ruta de degradación se REPORTA.
+  impacto parecido, gana la que pierde archivo.**
+- **[2026-08-23] Defensas que fallan en silencio son peores que el bug.** Toda ruta de
+  degradación se REPORTA.
+- **[2026-08-26] Un guard que compara contra una FOTO del estado no protege contra lo que
+  el propio lote está escribiendo.** `dias_ocupados` se leía una vez al inicio: dos
+  huérfanas del mismo (story_id, dia) pasaban ambas y creaban el duplicado que el guard
+  existía para evitar. Se predijo y no se arregló antes de correr; mordió.
+- **[2026-08-26] Asimetría de tests: un experimento benigno que YA duele concluye; uno que
+  no duele NO concluye.** Se declara la asimetría ANTES de correr, junto con el umbral.
+- **[2026-08-26] El campo `modelo` de las filas derivadas es marca temporal forense.**
+  `zai-org/GLM-5.2` = pre-OpenRouter; `z-ai/glm-5.2` = post 2026-08-22. No se diseñó para
+  eso y resolvió un duplicado sin necesidad de hipótesis.
 - **[2026-08-09] Trocear por DÍA mata la deriva causal. resumenes_dia es DERIVADO.**
 - **[2026-08-09] El clustering NO es incremental: re-particiona todo el corpus.**
 - **[2026-08-22] Un smoke/diag verde valida LÓGICA, no INTEGRACIÓN.**
@@ -47,7 +62,8 @@ Soy Jota (Johan). Claude es "Claudio". Reglas que NO se pierden:
 
 ## Stack
 Crawler Python (GitHub Actions cada 6h) → Supabase (Postgres + pgvector) → Next.js 14 en Vercel.
-Monorepo Mr-JotA-94/trama (/crawler, /web, /supabase/migrations).
+Monorepo Mr-JotA-94/trama (/crawler, /web, /supabase/migrations). **REPO PÚBLICO desde
+2026-08-26**: minutos de Actions ilimitados.
 **LLM Fase 3: GLM-5.2 vía OPENROUTER.** Slug `z-ai/glm-5.2`, endpoint
 `https://openrouter.ai/api/v1`, key `OPENROUTER_API_KEY`.
 - **Payload OBLIGATORIO: `reasoning:{enabled:False}`.**
@@ -57,123 +73,143 @@ Monorepo Mr-JotA-94/trama (/crawler, /web, /supabase/migrations).
 
 ## Banco: 7 medios. Corpus ~15k artículos / crece ~1000/día.
 
-## ⚠️ RESTRICCIÓN OPERATIVA NUEVA — presupuesto de GitHub Actions
-**1.805 de 2.000 minutos consumidos al 2026-08-23. Quedan ~195 para ~8 días de mes.**
-- **DECIDIDO (2026-08-23): el repo se hace PÚBLICO.** En repos públicos los minutos de
-  Actions son ILIMITADOS, así que esto disuelve la restricción en vez de administrarla.
-  Coherente con Arquitectura §0 ("Tier 2, compartible públicamente") y con el principio
-  de disclosure del método.
-  **CHECKLIST PREVIO AL SWITCH — dos pasos son irreversibles, hacerlos ANTES:**
-  1. **Rotar la clave secreta de Supabase y la de OpenRouter ANTES de flipear.** Es lo
-     único que hace que un secreto filtrado en el historial nazca muerto. Después no sirve.
-  2. **Auditar la HISTORIA de git, no el working tree.** Hacerlo público expone todos los
-     commits, no el estado actual: `git log --all --oneline -S "sb_secret_"` (repetir con
-     SUPABASE_SERVICE_KEY=, OPENROUTER_API_KEY=, eyJ) y
-     `git log --all --pretty=format: --name-only --diff-filter=A | findstr /I ".env"`.
-     **Si aparece algo, la salida NO es reescribir la historia:** filter-repo/BFG cambia
-     todos los SHA, y la BITACORA CITA SHAs concretos (6e25379, ce4af7f, 26a10eb, b2bbb43)
-     como evidencia forense de incidentes. Reescribir destruiría trazabilidad real para
-     tapar un valor ya rotado. Rotar y seguir.
-  3. **Verificar que nunca se commiteó corpus:**
-     `git log --all --pretty=format: --name-only --diff-filter=A | findstr /I "jsonl csv corpus dump"`.
-     Un volcado de textos completos en un repo público es REDISTRIBUIR contenido de los
-     medios, y choca con la regla legal del proyecto. El código va público; el archivo
-     vive en Supabase.
-  4. **Asumido a ojos abiertos:** la BITACORA y Arquitectura §4 se vuelven públicas,
-     incluida la tabla de posicionamiento editorial por medio ("hipótesis internas, NO
-     etiquetas del producto"). Se publica igual —esconder los supuestos sería la opacidad
-     que Trama critica— pero es decisión tomada, no descubierta después. Los prompts de
-     Fase 3 también quedan expuestos: alineado con la disclosure, riesgo bajo (el gate
-     verbatim no es gameable sin dejar de citar literal).
-- Si sigue privado, el triaje sale de "archivo antes que derivado":
-  · **NO tocar el job `crawl`** — es lo único que protege el archivo (una nota que el feed
-    rota y no se capturó no vuelve nunca), y es el job barato.
-  · **Recortar el job `backfill`** (torch CPU + spaCy + sentence-transformers instalados en
-    cada corrida). Su trabajo es derivado y acumulable: los artículos con `embedding NULL`
-    esperan sin perderse. Bajarlo a 1×/día en vez de 4×.
-  · **MEDIR primero:** Settings → Billing → Actions usage da minutos por workflow. No
-    adivinar cuál es el goloso.
-- **CONSECUENCIA: enganchar Fase 3 al cron consume minutos que hoy no existen.** Ese plan
-  queda BLOQUEADO detrás de esta decisión.
+## ⚠️ RESTRICCIÓN NUEVA CON RELOJ — free tier de Supabase
+**Supabase Free = 500 MB de base. Pro = $25/mes (8 GB).**
+El corpus crece ~1000 artículos/día. Con `contenido_visible` (~4 KB) + embedding de 384
+dims (~1,5 KB) + índices, del orden de **~7 MB/día ≈ 210 MB/mes**. **ESTIMADO, NO MEDIDO:
+la primera acción de la próxima sesión es medirlo.**
+- **Por qué es de la categoría grave:** si la base se llena, el proyecto DEJA DE ESCRIBIR.
+  Eso es pérdida permanente de archivo, no deuda derivada.
+- **A diferencia del presupuesto de Actions, esta NO se disuelve.** Un archivo inmutable
+  que crece 1000 notas/día no cabe en 500 MB de forma indefinida, y podar es exactamente
+  lo que el proyecto prohíbe. **La premisa "stack gratis" tiene fecha de vencimiento por
+  diseño.** Se asume a ojos abiertos, como el repo público — no se descubre el día que
+  falle una escritura.
+- **Estimación gruesa: 6–8 semanas (≈ octubre 2026).** Sustituir por el dato real.
+
+## PROYECCIÓN DE GASTO MENSUAL (2026-08-26)
+| concepto | hoy | en régimen |
+|---|---|---|
+| GitHub Actions | $0 | **$0** — repo público, ilimitado |
+| Vercel Hobby | $0 | $0 |
+| LLM Fase 3 (cron 1×/día) | $0 | **$28–45/mes** |
+| Supabase | $0 | **$25/mes** al pasar 500 MB |
+| Backfill histórico (~750 historias) | — | $25–35, **una sola vez** |
+
+**Régimen ~$53–70/mes.** Base del cálculo LLM: $0,062/día denso medido (2026-08-22) ×
+~24 días/día calendario (derivado de los 85 días que guardó la corrida del 26 tras ~3–4
+días sin dispararse). **El $45 es techo, no centro**: esos 85 se acumularon SIN
+`revincular` corriendo. El número exacto llega solo con 7 días de `dia_guardados` del job
+nuevo. El costo de Supabase es ESTRUCTURAL (el archivo crece); el del LLM es OPCIONAL y
+regulable (bajar Fase 3 a cada 2 días lo parte al medio, a costa de frescura).
 
 ## DÓNDE ESTAMOS
 
-**Fase 1 COMPLETA. Fase 2 EN PRODUCCIÓN + Louvain beat-split.**
+**Fase 1 COMPLETA. Fase 2 EN PRODUCCIÓN + Louvain beat-split (`seed=42`, determinista).**
 
-**Fase 3 — pipeline EN PRODUCCIÓN. Disparo MANUAL (no está en el cron).**
-Bucle operativo: crawler y clustering corren solos cada 6h; Fase 3 se dispara a mano en
-Actions → `fase3_backfill.yml` → Run workflow (horas=72). La web lee `resumenes_dia` con
-`revalidate=300`: ~5 min después se ve.
+**PIPELINE DE CINCO JOBS en `crawler.yml`, encadenados por `needs`:**
+`crawl → backfill → clustering → revincular → fase3`
+- Los cuatro primeros corren en las 4 vueltas diarias (00, 06, 12, 18 UTC).
+- **`fase3` corre SOLO en la vuelta de las 06:00 UTC** (01:00 CO), vía
+  `if: github.event.schedule == '0 6 * * *' || inputs.correr_fase3`.
+- **El cron está PARTIDO EN DOS entradas a propósito** (`"0 0,12,18 * * *"` y `"0 6 * * *"`):
+  `github.event.schedule` devuelve el string del cron que disparó, y con el cron unificado
+  las cuatro vueltas eran indistinguibles.
+- **⚠️ MODO DE FALLA SILENCIOSO:** el `if` compara el string carácter por carácter. Si se
+  edita el cron y no la condición, `fase3` deja de correr sin error ni log. **Verificación
+  visual: la corrida de las 06:00 UTC debe mostrar CINCO jobs; las otras tres, cuatro.**
+- Corridas manuales: el input `correr_fase3` viene en `false`. Disparar el crawler a mano
+  NO gasta LLM salvo que se marque.
 
-**FRONTEND DE FASE 3 — MERGEADO (PR #18) Y EN PRODUCCIÓN.** Verificado en vivo en
-trama-co.vercel.app: síntesis del día bajo el título, "Lo que reportaron los medios"
-(corroborado verde / un-solo-medio ámbar), chips "Análisis por día", modal `<dialog>` por
-día. Los placeholders de "Análisis de persuasión" y "Reacciones" están retirados.
-Los 7 puntos del gate cerraron, incluido el fix de mayúsculas heredadas por el `<dialog>`
-y el detalle de móvil.
+**RE-VINCULACIÓN DE HUÉRFANAS — EN PRODUCCIÓN (`crawler/revincular_huerfanas.py`).**
+Repara filas de `resumenes_dia` con `story_id NULL` re-apuntándolas por PERTENENCIA de sus
+artículos (sobrevive al cambio de composición, cosa que la adopción por `dia_key` no hace).
+- **Criterio: CONTENCIÓN TOTAL, no mayoría.** La story candidata debe contener TODOS los
+  artículos del día. Si el día se repartió entre clústeres, ese análisis ya no describe a
+  ninguno y colgárselo al mayoritario contaminaría el expediente con material de otra
+  historia. Las descartadas se cuentan y se imprimen; nunca en silencio.
+- **`needs: revincular` en `fase3` es ECONÓMICO, no cosmético:** medido el 26/08,
+  revincular recuperó 12 días ya pagados que Fase 3 habría regenerado (~$0,74/vuelta).
 
-**HORA DE PUBLICACIÓN — MERGEADA (PR #19) Y EN PRODUCCIÓN.** `crawler.py` ahora resuelve
-la fecha por cadena ordenada: JSON-LD `datePublished` → `<meta article:published_time>` →
-piso de trafilatura (solo fecha), con la procedencia contada e impresa al cierre de cada
-corrida. Gate de 6 puntos, 6/6. Confirmado en base: filas nuevas con hora real
-(20:01:56, 21:38:53, 23:15:43 UTC) conviviendo con las viejas en 00:00:00.
+**⚠️ SE REFUTA: "el enganche de Fase 3 al cron es el arreglo real del desvinculado."**
+Era la premisa vigente hasta el 26/08 y es FALSA. El arreglo es `revincular`. El cron de
+Fase 3 es **conveniencia operativa acotada** (que los días nuevos se analicen sin apretar
+el botón), y se paga en dólares recurrentes.
+
+**⚠️ HALLAZGO ABIERTO — FRAGMENTACIÓN PROGRESIVA DE LOS DÍAS.**
+Con **una hora** de material nuevo, las huérfanas pasaron de 14 a 30 en una sola vuelta.
+Y los repartos escalaron: días "repartidos entre 3 clústeres" y "entre 4", que el día
+anterior no existían (todos eran "entre 2"). Con `seed=42` fijo **no es aleatoriedad del
+algoritmo**: es el corpus creciente reorganizando clústeres, y cada reorganización parte
+un día ya partido. **Si el reparto entre 3–4 se vuelve la norma, la ventana-día deja de ser
+una unidad de análisis estable, y eso toca el DISEÑO de Fase 3, no su calendario.**
+No medido en el tiempo todavía: hacen falta varios días de logs de `revincular`.
+
+**FRONTEND DE FASE 3 — MERGEADO (PR #18) Y EN PRODUCCIÓN.** Síntesis del día bajo el
+título, "Lo que reportaron los medios" (corroborado / un-solo-medio), chips "Análisis por
+día", modal `<dialog>` por día. Placeholders de "Análisis de persuasión" y "Reacciones"
+retirados.
+
+**HORA DE PUBLICACIÓN — MERGEADA (PR #19) Y EN PRODUCCIÓN.** Cadena ordenada: JSON-LD
+`datePublished` → `<meta article:published_time>` → piso de trafilatura (solo fecha), con
+procedencia contada e impresa al cierre de cada corrida.
 **NO recuperó el pasado y no podía:** los ~15k artículos previos quedan sin hora para
-siempre. De acá en adelante sí la hay.
-**NO "corregir" el `+00:00` de La Silla Vacía:** verificado como UTC real (Δ=0,00 h en
-10/10 contra el `<pubDate>` de su RSS).
-
-**⚠️ EL ANÁLISIS SE DESVINCULA SOLO ENTRE CORRIDAS — hallazgo del 2026-08-23.**
-Muchas historias muestran la página en blanco pese a tener análisis hecho. **28 filas
-huérfanas** (`story_id IS NULL`) contra 9 el día anterior.
-- **Mecanismo REAL (verificado en el código, no el que reportó Claude Code):** `stories`
-  usa UPSERT + poda ACOTADA de huérfanas. Una historia que conserva su `uuid_estable` NO
-  se borra. Lo que dispara el SET NULL es la **migración del uuid**: un clúster que crece
-  e incorpora una nota MÁS ANTIGUA cambia su artículo semilla → uuid5 nuevo → el sid viejo
-  sale de `sids_actuales` → lo barre la poda. Es el "residual aceptado" del 2026-06-21.
-- **La adopción por `dia_key` NO rescata el caso que importa.** Adopta solo si la
-  composición del día es IDÉNTICA. Un clúster que pasó de 8 a 47 artículos cambió la
-  composición de sus días → dia_key nuevo → esas filas no se adoptan nunca: se REGENERAN
-  pagando LLM de nuevo, y las viejas quedan huérfanas permanentes.
-- Correr el backfill hoy es COSMÉTICO: arregla la foto y se vuelve a vaciar en la próxima
-  corrida del clustering que haga migrar un sid.
+siempre. **`_dia_bogota()` YA maneja ese caso** (guard de `26a10eb`: medianoche UTC exacta
+se devuelve sin convertir). Verificado el 26/08: **0 de 198 filas con el día corrido.**
+**NO "corregir" el `+00:00` de La Silla Vacía:** verificado como UTC real.
 
 **ESQUEMA:**
-- comparaciones: hash_a/b, sin story_id. RLS activo, SIN policy pública (a propósito: su
-  deuda de auditoría sigue abierta, no se expone material no leído).
+- comparaciones: hash_a/b, sin story_id. RLS activo, SIN policy pública (a propósito).
 - resumenes: HUÉRFANA, a DROPear.
-- resumenes_dia: `dia` es **DATE** (la deuda que decía TIMESTAMP era falsa, RETIRADA).
-  dia_key UNIQUE, story_id FK ON DELETE SET NULL nullable. article_ids `uuid[]`,
-  member_hashes/medios `text[]`, hechos_corroborados/solo_un_medio `jsonb`.
-  RLS con policy `lectura_publica` (migración 000019).
+- resumenes_dia: `dia` es **DATE**. dia_key UNIQUE, story_id FK ON DELETE SET NULL
+  nullable. article_ids `uuid[]`, member_hashes/medios `text[]`,
+  hechos_corroborados/solo_un_medio `jsonb`. RLS con policy `lectura_publica` (mig. 000019).
 - story_relations + tipo ('tematica'|'misma_trama').
 
 ## PRÓXIMO PASO cuando retomemos
-1. **[BLOQUEANTE, días] Hacer el repo público** siguiendo el checklist de arriba —rotar
-   claves y auditar la historia ANTES del switch—. Disuelve el presupuesto de Actions,
-   que es lo único acá que puede apagar el crawler y causar pérdida de archivo
-   irreversible. Si por lo que sea el switch se demora, el plan B es recortar el job
-   `backfill` (derivado, acumulable), nunca el `crawl`.
-2. **[Frontend, cero minutos de CI] Rediseño de la línea de tiempo por día.** Ver Ideas
-   en BITACORA. Se puede hacer entero con el presupuesto de CI seco, y elimina la
-   redundancia chips↔separadores. **Orden obligatorio: primero agrupar la línea de tiempo
-   por día de PUBLICACIÓN, después borrar los chips.** Al revés se cambia redundancia
-   visible por pérdida silenciosa.
-3. **Enganche de Fase 3 al cron** — es el arreglo real del desvinculado. BLOQUEADO por (1).
-4. **Backfill HISTÓRICO (Objetivo B):** ~750 historias inactivas, ~$25-35. También
-   consume CI: va después de (1).
-5. Renombrar `RSL_policy_resumenes_dia.sql` → `rls_...` ("RSL" es typo, falla el grep).
-   Sigue sin trackear en main.
-6. DROP tabla `resumenes`. Limpieza de huérfanas permanentes viejas.
+1. **[5 minutos, hacer PRIMERO] Medir el tamaño de la base.** Define si el reloj de
+   Supabase marca 6 semanas o 2, y eso puede reordenar todo lo demás. Queries abajo.
+2. **[Frontend, cero costo] Rediseño de la línea de tiempo por día.** Ver Ideas en
+   BITACORA. **Orden obligatorio: primero agrupar la línea de tiempo por día de
+   PUBLICACIÓN, después borrar los chips.** Al revés se cambia redundancia visible por
+   pérdida silenciosa. Es lo único de la cola que no depende de esperar datos.
+3. **[Esperar 7 días, llega solo] Costo real del cron de Fase 3.** Acumular
+   `dia_guardados` del job `fase3`. Con ese número se decide si sube de 1×/día a más
+   vueltas — CON el dato, no con la proyección.
+4. **[Medir varios días] Fragmentación progresiva de los días.** Seguir el conteo de
+   `repartida` y el número de clústeres por reparto en los logs de `revincular`.
+5. **Backfill HISTÓRICO (Objetivo B):** ~750 historias inactivas, ~$25-35. Ya no bloqueado
+   por CI; ahora es decisión de presupuesto.
+6. Renombrar `RSL_policy_resumenes_dia.sql` → `rls_...` ("RSL" es typo, falla el grep).
+7. DROP tabla `resumenes`. Limpieza de huérfanas permanentes viejas.
 
 ## Cómo verificar (queries y comandos vigentes)
-- **Ver avance de Fase 3 en la web:** Actions → `fase3_backfill.yml` → Run workflow
-  (horas=72) → recargar a los ~5 min. OJO: consume minutos de CI.
-- **Minutos de Actions:** Settings → Billing → Actions usage (por workflow).
+- **Tamaño de la base (restricción con reloj):**
+  ```sql
+  select pg_size_pretty(pg_database_size(current_database())) as base_total;
+  select relname, pg_size_pretty(pg_total_relation_size(c.oid)) as tamano
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public' and c.relkind = 'r'
+  order by pg_total_relation_size(c.oid) desc limit 8;
+  ```
+- **Huérfanas y su clasificación:** el log del job `revincular` en CADA corrida
+  (`revinculable / colision_lote / superada / repartida / sin_story`). Query cruda:
+  `select count(*) from resumenes_dia where story_id is null;`
+- **Duplicados de día** (no deberían existir; el retiro post-insert los previene):
+  ```sql
+  select story_id, dia, count(*) from resumenes_dia
+  where story_id is not null group by story_id, dia having count(*) > 1;
+  ```
+- **Costo del cron de Fase 3:** cierre del log del job `fase3` → `N días guardados`.
+  Multiplicar por ~$0,062.
+- **Que `fase3` sigue enganchado:** Actions → la corrida de las 06:00 UTC debe mostrar
+  CINCO jobs. Cuatro = el `if` se desincronizó del cron.
 - **RLS de una tabla nueva** (al CREARLA, no al consumirla):
   `select c.relname, c.relrowsecurity, p.polname from pg_class c
    left join pg_policy p on p.polrelid=c.oid where c.relname='X';`
-- **Huérfanas:** `select count(*) from resumenes_dia where story_id is null;`
-- **Procedencia de fechas nuevas:** el log de cada corrida del crawler imprime
-  `fecha_publicacion por fuente: {...}`. Si `trafilatura-solo-fecha` deja de ser marginal,
-  un medio cambió su HTML: es regresión, no ruido.
+- **Procedencia de fechas nuevas:** el log del crawler imprime `fecha_publicacion por
+  fuente: {...}`. Si `trafilatura-solo-fecha` deja de ser marginal, un medio cambió su
+  HTML: es regresión, no ruido.
+- **Cron de GitHub:** se deshabilita solo tras 60 días sin actividad en el repo, avisando
+  solo por mail. Si el crawler deja de correr sin explicación, revisar eso primero.
 - Distinguir transitorio vs determinista de proveedor: re-correr (idempotencia).

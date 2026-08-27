@@ -6,8 +6,47 @@ No es documentación de arquitectura (eso vive en ARQUITECTURA.md) ni migracione
 yo-del-futuro entienda el estado actual sin tener que reconstruirlo de memoria.
 
 ---
-
+# ═══════════════════════════════════════════════════════════════════════
 ## Operaciones sobre datos (truncates y borrados)
+# ═══════════════════════════════════════════════════════════════════════
+
+### 2026-08-26 — Re-vinculación de 21 huérfanas + borrado de 2 filas duplicadas
+- **Contexto:** 37 filas de `resumenes_dia` con `story_id NULL` (28 el día anterior; la
+  tasa era ~9/día). El análisis estaba hecho y pagado, pero invisible en la web, que
+  consulta por `story_id`.
+- **Operación 1 — UPDATE de `story_id` sobre 21 filas**, vía
+  `revincular_huerfanas.py --aplicar`. Solo metadata derivada: no toca `contenido_visible`
+  ni `hash`. La regla de inmutabilidad cubre `articles`, no el caché de análisis (lo
+  declara el docstring de `guardar_resumen_dia`).
+- **Operación 2 — DELETE de 2 filas duplicadas** (dos filas vigentes para el mismo
+  `(story_id, dia)`):
+  · `1e8434d8-ac57-4b82-bb3a-fb6a8155c106` — story `ca27c726`, día 2026-08-14, 3 artículos,
+    modelo `zai-org/GLM-5.2`. Residuo PRE-migración a OpenRouter que el retiro por
+    `(story_id, dia)` no alcanzó porque en su momento estaba huérfana. Se conservó
+    `0fac8ab9` (5 artículos, `z-ai/glm-5.2`).
+  · `cf0aa6a5-35e8-4de4-a965-039e4d2205da` — story `e1369247`, día 2026-08-21, 2 artículos.
+    **Este lo creó el propio script** (ver Deuda técnica). Se conservó `5198fa94`
+    (3 artículos). Criterio de desempate fijado ANTES de ver las filas: más artículos gana;
+    empate → modelo post-migración; empate total → id menor.
+- **Estado verificado tras la operación:** 196 filas, 16 huérfanas, 0 duplicados. Dry-run
+  del script corregido: 16 huérfanas, **0 revinculables** (5 superadas, 8 repartidas,
+  3 sin story) — las 16 restantes son descartes legítimos, no trabajo pendiente.
+- **Cómo se detectó el duplicado:** aritmética del propio script. `dias_ocupados` es un SET
+  de `(story_id, dia)`; con 161 filas no huérfanas el set daba 160. La diferencia de 1 era
+  el duplicado. Ese cálculo quedó incorporado al log y ahora certifica la ausencia.
+
+### 2026-08-26 — Repo hecho PÚBLICO, con rotación de claves previa
+- Rotadas `SUPABASE_SERVICE_KEY` y `OPENROUTER_API_KEY` ANTES del switch, con **solape**:
+  Supabase admite varias secret keys activas, así que se crea la nueva, se propaga a
+  GitHub Secrets y `.env`, se verifica con corridas verdes, y sólo entonces se borra la
+  vieja. Cero ventana de caída.
+- **Se rotó aunque la auditoría de la historia salió limpia**, por principio propio: el
+  grep es un instrumento de medición y los instrumentos de este proyecto ya fallaron tres
+  veces en dos días. Rotar es la única defensa que no depende de que el grep haya sido
+  exhaustivo.
+- **Efecto colateral no previsto y valioso:** con el repo público, Claude puede leer el
+  código real desde `raw.githubusercontent.com` en vez de trabajar sobre snapshots del
+  proyecto. Dos diagnósticos se resolvieron en minutos gracias a eso.
 
 ### 2026-08-23 — 3 artículos reales insertados durante el gate del parche de la hora
 El punto 3/4 del gate exigía verificar en base real, así que la corrida acotada de prueba
@@ -505,8 +544,74 @@ el contenido. La Silla Vacía queda CONFIABLE, unidad cerrada.
   twitter:description (El Colombiano). ÚLTIMA cirugía de calidad antes de Fase 2.
 
 ---
-
+# ═══════════════════════════════════════════════════════════════════════
 ## Deuda técnica conocida
+# ═══════════════════════════════════════════════════════════════════════
+
+### 2026-08-26 — `story_articles` se BORRA ENTERA en cada corrida del clustering
+- **Síntoma potencial (no observado todavía):** ventana en la que la tabla está vacía.
+- **Causa, leída en el código:** `clustering_fase2.reescribir_stories()` hace
+  `sb.table("story_articles").delete().not_.is_("article_id","null")` —que matchea TODAS
+  las filas— y después reconstruye con `insert`. Igual con `story_relations`. La poda de
+  `stories` sí es acotada (`.in_("id", huerfanas)`), pero estas dos no.
+- **Impacto si el job muere en esa ventana:** todos los expedientes quedarían sin
+  artículos hasta la corrida siguiente (6 h). El sitio se ve vacío, pero **no se pierde
+  archivo**: `articles` no se toca y la tabla se reconstruye sola.
+- **Corrige el registro del 2026-08-23:** allí quedó anotado que Claude Code había
+  inventado un "DELETE+INSERT de toda la tabla". Acertó el mecanismo y erró la tabla —
+  era `story_articles`, no `stories`. La lección ("verificar presencia no es verificar el
+  mecanismo") sigue en pie; el ejemplo estaba mal atribuido.
+- **Decisión: NO arreglar por ahora.** No ha ocurrido, y el arreglo (transacción o
+  escritura shadow+swap) es desproporcionado frente a un síntoma nunca observado.
+- **Reactivar SI:** aparece una corrida de `clustering` fallida/cancelada a mitad, o el
+  sitio se ve vacío sin explicación.
+- **CONSECUENCIA VIGENTE:** `revincular_huerfanas.py` lee `story_articles`, así que
+  **nunca puede correr en paralelo con el clustering**. Hoy lo garantiza `needs:`. Ni
+  `crawler.yml` ni `fase3_backfill.yml` declaran `concurrency:`, así que un disparo manual
+  simultáneo sí puede pisarse. Deuda menor, anotada.
+
+### 2026-08-26 — Un guard contra una FOTO del estado no protege del propio lote
+- **Síntoma:** tras correr `revincular_huerfanas.py --aplicar`, apareció un duplicado
+  `(story_id, dia)` NUEVO (`e1369247` / 2026-08-21) que no existía en el dry-run.
+- **Causa:** `dias_ocupados` se leía UNA vez al inicio. El guard `superada` comparaba cada
+  huérfana contra esa foto, ciega a las filas que el propio bucle estaba escribiendo. Dos
+  huérfanas distintas —dos composiciones viejas del mismo día bajo la misma story— pasaban
+  ambas y se escribían ambas, creando justo el duplicado que el guard existía para evitar.
+- **Agravante de proceso:** el agujero se identificó ANTES de que el script corriera en
+  modo escritura, y se decidió "si aparece, lo arreglamos". Apareció. **Un defecto
+  conocido no se documenta, se arregla antes de ejecutar.**
+- **ARREGLADO:** las candidatas se agrupan por `(story_id, dia)` antes de escribir y gana
+  la composición más completa; las descartadas se cuentan como `colision_lote` y se
+  imprimen con su id.
+- **Regla general que deja:** todo guard de idempotencia sobre un lote necesita DOS
+  memorias — el estado persistido y lo que el lote lleva escrito.
+
+### 2026-08-26 — DOS hipótesis propias caídas contra datos (registro de método)
+- **Hipótesis 1: "`_dia_bogota()` sigue corriendo el día un día".** FALSA. El commit
+  `26a10eb` ya había agregado el guard: medianoche UTC exacta se devuelve sin convertir de
+  zona. El grep mostraba `astimezone(BOGOTA)` porque es la rama `else`, la que se usa con
+  artículos que sí tienen hora. **Presencia de una línea ≠ ejecución de esa línea.**
+- **Hipótesis 2: "hay filas de `resumenes_dia` con el día corrido, guardadas antes del
+  fix".** FALSA. Diag SQL sobre las 198 filas: **0 con desfase, 0 mixtas.** El fix precedió
+  al backfill definitivo aunque el commit los mezcle.
+- **Patrón común de las dos:** explicar el MECANISMO antes de leer la fuente. Las dos
+  murieron contra datos en menos de diez minutos, que es más o menos el punto del método.
+- **Fallo de instrumento asociado:** WebFetch contestó "no existe el job revincular" sobre
+  un `crawler.yml` que sí lo tenía. Pasa el archivo por un modelo pequeño que resume:
+  **confirma presencia, nunca ausencia.**
+
+### 2026-08-26 — El free tier de Supabase tiene fecha de vencimiento (ESTIMADO, no medido)
+- **Restricción:** Free = 500 MB de base; Pro = $25/mes por 8 GB.
+- **Estimación:** ~1000 artículos/día × (~4 KB de `contenido_visible` + ~1,5 KB de
+  embedding + índices) ≈ **7 MB/día ≈ 210 MB/mes**. Si hoy hay ~130 MB, quedan ~6–8
+  semanas. **NO MEDIDO: es aritmética con supuestos gruesos, no un dato.**
+- **Por qué NO es deuda derivada:** si la base se llena, el proyecto deja de escribir, y
+  eso es pérdida permanente de archivo — la categoría que gobierna toda la priorización.
+- **Por qué no se disuelve como el presupuesto de Actions:** un archivo inmutable que
+  crece 1000 notas/día no cabe en 500 MB de forma indefinida, y podar es exactamente lo
+  que el proyecto prohíbe. **La premisa "stack gratis" tiene fecha de vencimiento por
+  DISEÑO, no por descuido.** Se asume a ojos abiertos.
+- **Acción:** medir con `pg_database_size` antes de cualquier otra cosa la próxima sesión.
 
 ### 2026-08-23 — [RESUELTA] La hora de publicación: causa, medición y parche mergeado (PR #19)
 SÍNTOMA: `fecha_publicacion` en medianoche UTC exacta en **15.064/15.064 artículos, 100%
@@ -1867,8 +1972,82 @@ corrige con el dato concreto, no con la sospecha desde el título. NO se registr
   medios. Resolver en iteración de web.
 ---
 
-## Ideas registradas (no son deuda, son evolución futura)
 
+# ═══════════════════════════════════════════════════════════════════════
+# SECCIÓN DESTINO: DECISIONES (no hipótesis)
+# ═══════════════════════════════════════════════════════════════════════
+
+### 2026-08-26 — Criterio de re-vinculación: CONTENCIÓN TOTAL, no mayoría
+Para re-apuntar una fila huérfana, la story candidata debe contener **todos** los
+artículos de ese día, no la mayoría.
+MOTIVO: si un día se repartió entre dos clústeres —que es exactamente lo que hace el
+beat-split—, ese análisis ya no describe a ninguno de los dos. Colgárselo al mayoritario
+pondría, en el expediente de una historia, hechos corroborados con material de otra. Para
+un proyecto cuya defensa central es el gate verbatim, eso es contaminación silenciosa a
+cambio de una foto más llena.
+MEDIDO AL DECIDIR: 8 de las descartadas tenían story mayoritaria (umbral fijado antes:
+revisar el criterio si superaban 12). El script reporta ese número en cada corrida, así
+que la decisión es revisable CON el dato si el reparto se vuelve mayoritario.
+
+### 2026-08-26 — Fase 3 al cron: 1×/día, y NO es el arreglo del desvinculado
+**SE REFUTA la premisa vigente.** TRASPASO afirmaba que "el enganche de Fase 3 al cron es
+el arreglo real del desvinculado". Es falso: el arreglo es `revincular_huerfanas.py`. El
+cron es **conveniencia operativa** — que los días nuevos se analicen sin apretar el botón —
+y se paga en dólares recurrentes.
+EXPERIMENTO (26/08): fase3 → 85 días guardados · crawler+clustering con ~1 h de material →
+huérfanas 14→30, revincular recupera 12 · fase3 otra vez → **2 días guardados**.
+Los 85 son BACKLOG (días sin correr), no churn.
+UMBRAL Y ASIMETRÍA, ambos declarados ANTES: `≤2 → 4×/día viable`, pero *"un resultado bajo
+con una hora de material no concluye; sólo uno alto sería concluyente"*. Dio 2 → descarta
+el escenario de $245/mes, **no autoriza** las 4 vueltas.
+DECISIÓN: `fase3` como 5º job de `crawler.yml`, `needs: revincular`, sólo en la vuelta de
+las 06:00 UTC, con `--horas 24 --presupuesto 3600`. Subir de frecuencia se decide con 7
+días de `dia_guardados`.
+`needs: revincular` es ECONÓMICO: revincular recuperó 12 días ya pagados que Fase 3 habría
+regenerado (~$0,74 por vuelta, del orden de $90/mes).
+CORRECCIÓN DE UN CÁLCULO PROPIO: se había afirmado que "1×/día cuesta la cuarta parte de
+4×/día". **Falso.** El costo está en cuántos días cambian de composición, no en la
+frecuencia: las historias sin cambios hacen `skip` y cuestan cero. Sí hay ahorro, pero por
+otra razón (un día que muta 3 veces en 24 h se regenera 3 veces con cron 4× y una sola con
+cron 1×), y su magnitud depende de la volatilidad intra-día, que no se midió.
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# SECCIÓN DESTINO: Ideas registradas (no son deuda, son evolución futura)
+# ═══════════════════════════════════════════════════════════════════════
+
+### 2026-08-26 — Re-vincular DENTRO de la poda del clustering (en vez de después)
+`reescribir_stories()` calcula `sids_actuales` y sabe, en el instante anterior al DELETE,
+a qué clúster nuevo fue a parar cada artículo de la story que va a matar. El mapa
+`sid_viejo → sid_nuevo` existe en memoria **y se tira**. El módulo actual lo reconstruye
+después desde `member_hashes`, que es inferir a posteriori algo que el código tenía en la
+mano — y agrega ambigüedad (dos stories candidatas) donde no la había.
+NO SE HIZO ASÍ, a propósito: tocaría el corazón de un Tier 2 que corre cada 6 h sobre todo
+el corpus, y **el paso separado hacía falta igual** para el stock de huérfanas ya
+existentes (esas stories ya murieron; ningún cambio en la poda las recupera).
+REACTIVAR SI: los logs de `revincular` muestran que el flujo nuevo de huérfanas no se
+recupera con el criterio actual — es decir, si `repartida` crece y `revinculable` se queda
+en cero corrida tras corrida.
+
+### 2026-08-26 — Tope de gasto por corrida en Fase 3 (cota de dinero, no de tiempo)
+`--presupuesto` es una cota de TIEMPO (segundos). No acota el costo: en una hora se pueden
+hacer muchas llamadas. Un tope explícito de `dias_guardados` por corrida sería la cota
+real, y convertiría el gasto mensual en algo garantizado en vez de estimado.
+NO SE HACE AHORA: con 1×/día y ~2 días por vuelta medidos, el riesgo es teórico. Reactivar
+si un mes sorprende por encima de la proyección de $45.
+
+### 2026-08-26 — Declarar `concurrency:` en los workflows que tocan las mismas tablas
+`crawler.yml` y `fase3_backfill.yml` escriben sobre `stories`/`story_articles`/
+`resumenes_dia` y ninguno declara `concurrency:`. El encadenamiento por `needs` protege
+dentro de un workflow, no entre workflows: un disparo manual de `fase3_backfill` mientras
+corre el pipeline puede leer una partición a medio reescribir.
+Fix candidato: `concurrency: { group: trama-pipeline, cancel-in-progress: false }` en ambos.
+Barato. No se hizo porque la unidad ya estaba cerrada.
+
+### 2026-08-26 — La fragmentación progresiva puede obligar a repensar la ventana-día
+Ver TRASPASO, hallazgo abierto. Si "repartido entre 3–4 clústeres" se vuelve la norma, la
+ventana-día deja de ser una unidad de análisis estable y el problema pasa a ser de DISEÑO
+de Fase 3, no de calendario. Requiere varios días de logs antes de siquiera plantear un fix.
 
 ### 2026-08-23 — Línea de tiempo plegable por día (fusionar "Análisis por día" con el hilo)
 IDEA DE JOTA, viendo la página en producción: los chips de "Análisis por día" y los
