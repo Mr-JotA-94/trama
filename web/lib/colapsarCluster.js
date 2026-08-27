@@ -59,6 +59,7 @@ export function colapsarCluster(capturas) {
       score_neutralidad:     ultima.score_neutralidad,
       score_cobertura:       ultima.score_cobertura,
       score_divergencia:     ultima.score_divergencia,
+      dia_publicacion:       ultima.dia_publicacion,
       es_ancla:              caps.some(c => c.es_ancla),
       editada,
       titulo_cambio,
