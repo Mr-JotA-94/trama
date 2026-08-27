@@ -143,7 +143,7 @@ def cargar_pertenencia_por_url():
     for f in filas:
         url = (f.get("articles") or {}).get("url")
         if url:
-            mapa[f["story_id"]].add(url)
+            mapa[url].add(f["story_id"])
     return mapa
 
 
@@ -175,7 +175,7 @@ def cargar_url_por_id(article_ids):
 # El predicado — ÚNICO, compartido por las dos fases
 # =======================================================================
 
-def contiene_todos(sid, aids, url_por_id, stories_por_url):
+def contiene_todos(sid, aids, url_por_id, stories_por_url, debug=False):
     """¿La story `sid` contiene TODAS las URLs de `aids`, según la
     composición ACTUAL de story_articles? Es el criterio de CONTENCIÓN TOTAL
     del módulo: deliberadamente más estricto que 'la story que más comparte'.
@@ -196,7 +196,27 @@ def contiene_todos(sid, aids, url_por_id, stories_por_url):
     (se invalide y re-vincule) de corrida en corrida.
 
     Precondición: `aids` no vacío (los llamadores filtran antes; una fila sin
-    article_ids no tiene contención que evaluar)."""
+    article_ids no tiene contención que evaluar).
+
+    `debug=True` imprime, ANTES de decidir, los dos conjuntos exactos que se
+    comparan — tipo y tamaño incluidos. Existe porque un bug real (2026-08-27:
+    stories_por_url invertido, quedó indexado por story_id en vez de por url)
+    pasó 17 checks en aislamiento y solo se vio corriendo contra datos reales.
+    Un print del shape real es más barato que confiar en que el nombre de la
+    variable diga la verdad."""
+    urls_resumen = {url_por_id.get(aid) for aid in aids}
+    if debug:
+        muestra_url = next(iter(urls_resumen), None)
+        candidatas_sid = stories_por_url.get(muestra_url, set())
+        print(f"    [debug] sid comparado = {sid!r} (tipo {type(sid).__name__})")
+        print(f"    [debug] urls_resumen: {len(urls_resumen)} elemento(s), "
+              f"tipo {type(muestra_url).__name__} — {urls_resumen}")
+        print(f"    [debug] stories_por_url[{muestra_url!r}]: "
+              f"{len(candidatas_sid)} elemento(s), "
+              f"tipo {type(next(iter(candidatas_sid), None)).__name__} — "
+              f"{list(candidatas_sid)[:5]}")
+        print(f"    [debug] stories_por_url tiene {len(stories_por_url)} claves en total; "
+              f"muestra de claves: {list(stories_por_url.keys())[:3]!r}")
     for aid in aids:
         url = url_por_id.get(aid)
         if url is None or sid not in stories_por_url.get(url, set()):
@@ -208,16 +228,27 @@ def contiene_todos(sid, aids, url_por_id, stories_por_url):
 # Fase 0 — invalidar vínculos que ya no cumplen contención
 # =======================================================================
 
-def clasificar_invalidaciones(vinculadas, url_por_id, stories_por_url):
+def clasificar_invalidaciones(vinculadas, url_por_id, stories_por_url, debug=False):
     """Filas con story_id NOT NULL cuyo vínculo YA NO cumple contención total
     contra la composición actual de story_articles. Devuelve la lista de
-    filas (dicts completos, no solo ids) a invalidar."""
+    filas (dicts completos, no solo ids) a invalidar.
+
+    `debug=True` imprime el diagnóstico de contiene_todos() para la PRIMERA
+    fila con article_ids no vacío — un caso arbitrario, cualquiera que hoy
+    esté vinculado, sirve para exhibir el shape real de los dos conjuntos
+    antes de decidir nada."""
     a_invalidar = []
+    ya_mostro_debug = False
     for f in vinculadas:
         aids = f.get("article_ids") or []
         if not aids:
             continue  # nada que verificar: no se puede evaluar contención sin artículos
-        if not contiene_todos(f["story_id"], aids, url_por_id, stories_por_url):
+        mostrar = debug and not ya_mostro_debug
+        ya_mostro_debug = ya_mostro_debug or mostrar
+        if mostrar:
+            print(f"[revincular] [debug] caso de muestra: resumen {f['id']} "
+                  f"({str(f['dia'])[:10]}), story vigente {f['story_id']}")
+        if not contiene_todos(f["story_id"], aids, url_por_id, stories_por_url, debug=mostrar):
             a_invalidar.append(f)
     return a_invalidar
 
@@ -285,7 +316,7 @@ def mayoritaria(huerfana, url_por_id, stories_por_url):
 # Ejecución
 # =======================================================================
 
-def revincular(aplicar=False, verbose=False):
+def revincular(aplicar=False, verbose=False, debug_un_caso=False):
     # ── Fase 0: invalidar ──────────────────────────────────────────────
     vinculadas = cargar_vinculadas()
     huerfanas = cargar_huerfanas()
@@ -298,7 +329,8 @@ def revincular(aplicar=False, verbose=False):
           f"({len(url_por_id)} resueltos a url), "
           f"{len(stories_por_url)} urls en clústeres vigentes")
 
-    a_invalidar = clasificar_invalidaciones(vinculadas, url_por_id, stories_por_url)
+    a_invalidar = clasificar_invalidaciones(vinculadas, url_por_id, stories_por_url,
+                                             debug=debug_un_caso)
     print(f"\n[revincular] fase 0 — invalidar: {len(a_invalidar)} vínculo(s) "
           f"ya no cumplen contención total")
     if verbose:
@@ -430,5 +462,9 @@ if __name__ == "__main__":
                    help="escribe de verdad; sin esto es dry-run")
     p.add_argument("--verbose", action="store_true",
                    help="imprime una línea por cada fila invalidada y por cada huérfana NO re-vinculada")
+    p.add_argument("--debug-un-caso", action="store_true",
+                   help="imprime, para UN vínculo vigente arbitrario, los dos conjuntos "
+                        "exactos (tipo y tamaño) que contiene_todos() compara — "
+                        "diagnóstico previo a confiar en el resultado")
     args = p.parse_args()
-    revincular(aplicar=args.aplicar, verbose=args.verbose)
+    revincular(aplicar=args.aplicar, verbose=args.verbose, debug_un_caso=args.debug_un_caso)
