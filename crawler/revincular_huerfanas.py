@@ -1,8 +1,11 @@
 # crawler/revincular_huerfanas.py — Tier 2, load-bearing.
 #
-# Re-vincula filas de `resumenes_dia` que quedaron con story_id NULL.
+# Fase 0: invalida vínculos de `resumenes_dia` que dejaron de cumplir la
+# contención total contra la composición ACTUAL de su story.
+# Fase 1: re-vincula filas que quedaron (o que la fase 0 acaba de dejar) con
+# story_id NULL.
 #
-# POR QUÉ EXISTE (mecanismo verificado en código, 2026-08-23):
+# POR QUÉ EXISTE LA FASE 1 (mecanismo verificado en código, 2026-08-23):
 # `clustering_fase2.reescribir_stories()` calcula el sid de cada clúster con
 # uuid5 sembrado en la URL del artículo MÁS ANTIGUO. Un clúster que crece e
 # incorpora una nota anterior a su semilla cambia de sid. El sid viejo sale de
@@ -18,16 +21,47 @@
 # se adoptan nunca. Este módulo re-vincula por PERTENENCIA de los artículos, que
 # sobrevive al cambio de composición.
 #
+# POR QUÉ EXISTE LA FASE 0 (medido 2026-08-26, síntoma en producción):
+# `story_articles` se borra entera y se reconstruye en cada corrida del
+# clustering. La fase 1 arregla vínculos ROTOS (story_id NULL) pero nunca
+# revisaba los que YA TIENEN dueño: un resumen vinculado el martes, cuando la
+# contención se cumplía, sigue apuntando a esa story el miércoles aunque el
+# clustering le haya quitado notas. Síntoma real en preview: un expediente
+# mostraba "0 notas · 3 medios" con botón "Hechos del día", y el modal citaba a
+# un medio ausente de esa historia — contaminación del expediente con material
+# de otra historia, justo lo que la contención total existe para impedir.
+# Medido: 244/259 vínculos (94,2%) siguen siendo coherentes; el trabajo de esta
+# fase son ~15 filas, no un problema generalizado.
+#
+# EL PREDICADO ES UNO SOLO — `contiene_todos()`. Fase 0 (¿el vínculo vigente
+# sigue siendo válido?) y fase 1 (¿qué story candidata es válida?) llaman a la
+# MISMA función. Si divergieran, un vínculo podría des-vincularse y
+# re-vincularse en cada corrida (oscilación): peor que el bug que esto arregla,
+# porque el bug original al menos era estable. No reimplementar el criterio en
+# ninguna de las dos fases.
+#
+# LA CONTENCIÓN COMPARA POR URL, NO POR article_id (medido 2026-08-26, 2/33
+# "ausencias" eran artefacto). Una nota editada genera fila NUEVA en `articles`
+# con id nuevo — la regla número uno del proyecto. resumenes_dia congeló el id
+# vigente cuando corrió Fase 3; si la nota se recapturó después, story_articles
+# apunta al id NUEVO y el id viejo no aparece ahí, aunque la nota SIGA en la
+# historia. La pertenencia a una historia es de la NOTA (la URL), no de la
+# CAPTURA (el id). Comparar por URL es coherente con el resto del pipeline:
+# colapsarCluster (frontend) y analisis_fase3 (backend) ya colapsan por URL;
+# este predicado era el único que razonaba por captura en un pipeline que
+# razona por nota.
+#
 # ORDEN DE EJECUCIÓN — NO NEGOCIABLE:
 # Lee `story_articles`, y `reescribir_stories()` BORRA ESA TABLA ENTERA antes de
 # reconstruirla (`delete().not_.is_("article_id","null")`). Correr esto en
 # paralelo con el clustering leería una tabla vacía o a medio llenar y
-# concluiría "ninguna huérfana tiene story actual". Va ENCADENADO después del
-# clustering, nunca en un cron propio.
+# concluiría "ningún vínculo es válido" / "ninguna huérfana tiene story actual".
+# Va ENCADENADO después del clustering, nunca en un cron propio.
 #
 # QUÉ TOCA: sólo la columna `story_id`, que es metadata derivada. No roza
 # contenido_visible ni hash. `resumenes_dia` es caché regenerable (lo declara el
-# docstring de guardar_resumen_dia), no archivo inmutable.
+# docstring de guardar_resumen_dia), no archivo inmutable. El total de filas
+# (count(*)) es invariante: esto re-apunta vínculos, nunca borra análisis.
 #
 # SEGURO POR DISEÑO: `guardar_resumen_dia` retira las filas previas del mismo
 # (story_id, dia) tras un insert exitoso. Si re-vinculamos una fila y más tarde
@@ -60,7 +94,7 @@ def _paginar(construir_query):
     """Ejecuta una query paginada hasta agotarla. `construir_query` recibe
     (desde, hasta) y devuelve la query lista para .execute().
     Existe porque el truncado silencioso de PostgREST ya mordió antes en este
-    proyecto: una página incompleta acá se leería como 'no hay más huérfanas'."""
+    proyecto: una página incompleta acá se leería como 'no hay más filas'."""
     filas, desde = [], 0
     while True:
         lote = construir_query(desde, desde + PAGINA - 1).execute().data or []
@@ -79,37 +113,58 @@ def cargar_huerfanas():
     ))
 
 
-def cargar_dias_ocupados():
-    """Set de (story_id, dia) que YA tienen análisis vigente. Una huérfana cuyo
-    día cae acá es material SUPERADO: el día se regeneró con la composición
-    nueva, y re-vincular la versión vieja sería mostrar el peor de los dos."""
-    filas = _paginar(lambda d, h: (
+def cargar_vinculadas():
+    """Filas con story_id NOT NULL: universo sobre el que la fase 0 verifica
+    contención. También se usa para derivar `dias_ocupados` (mismo snapshot,
+    una sola lectura — no una segunda query que pudiera desincronizarse de
+    ésta, ver nota de módulo sobre la trampa de la foto del estado)."""
+    return _paginar(lambda d, h: (
         sb.table("resumenes_dia")
-          .select("story_id, dia")
+          .select("id, dia, story_id, article_ids")
           .not_.is_("story_id", "null")
           .range(d, h)
     ))
-    return {(f["story_id"], str(f["dia"])[:10]) for f in filas}
 
 
-def cargar_pertenencia(article_ids):
-    """article_id -> set(story_id) según el estado ACTUAL de story_articles.
-    En condiciones normales cada artículo cae en una sola story, pero no se
-    asume: si el beat-split dejara un artículo en dos, queremos verlo, no
-    promediarlo."""
+def cargar_pertenencia_por_url():
+    """url -> set(story_id) según el estado ACTUAL de story_articles, con la
+    URL resuelta vía el FK a articles (mismo embed que usa page.js en Q1).
+    Fetch COMPLETO, sin filtrar por id: story_articles solo contiene los
+    clústeres VIGENTES (unos cientos de filas hoy), más simple y más barato
+    que encadenar chunks de .in_() — y evita el bug de fondo: filtrar por los
+    article_ids que trae resumenes_dia es exactamente lo que fallaba, porque
+    esos ids pueden ya no ser los representantes actuales."""
+    filas = _paginar(lambda d, h: (
+        sb.table("story_articles")
+          .select("story_id, articles(url)")
+          .range(d, h)
+    ))
     mapa = defaultdict(set)
+    for f in filas:
+        url = (f.get("articles") or {}).get("url")
+        if url:
+            mapa[url].add(f["story_id"])
+    return mapa
+
+
+def cargar_url_por_id(article_ids):
+    """article_id -> url, para resolver lo que resumenes_dia guardó. Esos ids
+    pueden ser capturas ya no representativas (la nota se recapturó y
+    story_articles apunta a la fila nueva) — pero `articles` es inmutable, así
+    que la fila del id viejo sigue ahí y basta con pedirla."""
+    mapa = {}
     ids = sorted(article_ids)
     for k in range(0, len(ids), LOTE_IN):
         trozo = ids[k:k + LOTE_IN]
         desde = 0
         while True:
-            lote = (sb.table("story_articles")
-                    .select("story_id, article_id")
-                    .in_("article_id", trozo)
+            lote = (sb.table("articles")
+                    .select("id, url")
+                    .in_("id", trozo)
                     .range(desde, desde + PAGINA - 1)
                     .execute().data) or []
             for f in lote:
-                mapa[f["article_id"]].add(f["story_id"])
+                mapa[f["id"]] = f["url"]
             if len(lote) < PAGINA:
                 break
             desde += PAGINA
@@ -117,35 +172,116 @@ def cargar_pertenencia(article_ids):
 
 
 # =======================================================================
-# Clasificación
+# El predicado — ÚNICO, compartido por las dos fases
 # =======================================================================
 
-def clasificar(huerfana, pertenencia, dias_ocupados):
-    """Decide qué hacer con UNA fila huérfana. Devuelve (clase, story_id|None, detalle).
+def contiene_todos(sid, aids, url_por_id, stories_por_url, debug=False):
+    """¿La story `sid` contiene TODAS las URLs de `aids`, según la
+    composición ACTUAL de story_articles? Es el criterio de CONTENCIÓN TOTAL
+    del módulo: deliberadamente más estricto que 'la story que más comparte'.
+    Si el día se partió entre dos clústeres, ese análisis ya no describe a
+    ninguno de los dos y colgárselo a la mayoría sería mezclar en un
+    expediente material de otra historia.
 
-    Criterio de re-vinculación: CONTENCIÓN TOTAL — la story candidata debe
-    contener TODOS los artículos del día. Es deliberadamente más estricto que
-    'la story que más comparte': si el día se partió entre dos clústeres, ese
-    análisis ya no describe a ninguno de los dos y re-vincularlo a la mayoría
-    sería colgarle a una historia un análisis que incluye material de otra.
-    Preferimos dejarlo huérfano y visible en el conteo."""
+    Compara por URL, no por id — ver la nota de cabecera del módulo (una nota
+    recapturada cambia de id; sigue siendo la misma nota). Un `aid` que no
+    resuelve a URL (no debería pasar: articles es inmutable) se trata como NO
+    contenido — fallar cerrado, nunca asumir contención sobre un dato que no
+    se pudo verificar.
+
+    Llamada por fase 0 (¿el vínculo vigente sigue siendo válido?) y por
+    clasificar() en fase 1 (¿qué story candidata lo es?). Es la MISMA función
+    en los dos sitios a propósito: dos implementaciones "equivalentes"
+    podrían divergir en un caso borde y hacer que un vínculo oscile
+    (se invalide y re-vincule) de corrida en corrida.
+
+    Precondición: `aids` no vacío (los llamadores filtran antes; una fila sin
+    article_ids no tiene contención que evaluar).
+
+    `debug=True` imprime, ANTES de decidir, los dos conjuntos exactos que se
+    comparan — tipo y tamaño incluidos. Existe porque un bug real (2026-08-27:
+    stories_por_url invertido, quedó indexado por story_id en vez de por url)
+    pasó 17 checks en aislamiento y solo se vio corriendo contra datos reales.
+    Un print del shape real es más barato que confiar en que el nombre de la
+    variable diga la verdad."""
+    urls_resumen = {url_por_id.get(aid) for aid in aids}
+    if debug:
+        muestra_url = next(iter(urls_resumen), None)
+        candidatas_sid = stories_por_url.get(muestra_url, set())
+        print(f"    [debug] sid comparado = {sid!r} (tipo {type(sid).__name__})")
+        print(f"    [debug] urls_resumen: {len(urls_resumen)} elemento(s), "
+              f"tipo {type(muestra_url).__name__} — {urls_resumen}")
+        print(f"    [debug] stories_por_url[{muestra_url!r}]: "
+              f"{len(candidatas_sid)} elemento(s), "
+              f"tipo {type(next(iter(candidatas_sid), None)).__name__} — "
+              f"{list(candidatas_sid)[:5]}")
+        print(f"    [debug] stories_por_url tiene {len(stories_por_url)} claves en total; "
+              f"muestra de claves: {list(stories_por_url.keys())[:3]!r}")
+    for aid in aids:
+        url = url_por_id.get(aid)
+        if url is None or sid not in stories_por_url.get(url, set()):
+            return False
+    return True
+
+
+# =======================================================================
+# Fase 0 — invalidar vínculos que ya no cumplen contención
+# =======================================================================
+
+def clasificar_invalidaciones(vinculadas, url_por_id, stories_por_url, debug=False):
+    """Filas con story_id NOT NULL cuyo vínculo YA NO cumple contención total
+    contra la composición actual de story_articles. Devuelve la lista de
+    filas (dicts completos, no solo ids) a invalidar.
+
+    `debug=True` imprime el diagnóstico de contiene_todos() para la PRIMERA
+    fila con article_ids no vacío — un caso arbitrario, cualquiera que hoy
+    esté vinculado, sirve para exhibir el shape real de los dos conjuntos
+    antes de decidir nada."""
+    a_invalidar = []
+    ya_mostro_debug = False
+    for f in vinculadas:
+        aids = f.get("article_ids") or []
+        if not aids:
+            continue  # nada que verificar: no se puede evaluar contención sin artículos
+        mostrar = debug and not ya_mostro_debug
+        ya_mostro_debug = ya_mostro_debug or mostrar
+        if mostrar:
+            print(f"[revincular] [debug] caso de muestra: resumen {f['id']} "
+                  f"({str(f['dia'])[:10]}), story vigente {f['story_id']}")
+        if not contiene_todos(f["story_id"], aids, url_por_id, stories_por_url, debug=mostrar):
+            a_invalidar.append(f)
+    return a_invalidar
+
+
+# =======================================================================
+# Fase 1 — re-vincular huérfanas (criterio sin cambios)
+# =======================================================================
+
+def clasificar(huerfana, url_por_id, stories_por_url, dias_ocupados):
+    """Decide qué hacer con UNA fila huérfana. Devuelve (clase, story_id|None, detalle)."""
     aids = huerfana.get("article_ids") or []
     dia = str(huerfana["dia"])[:10]
 
     if not aids:
         return "sin_articulos", None, "la fila no tiene article_ids"
 
-    conjuntos = [pertenencia.get(aid, set()) for aid in aids]
+    # Un aid que no resuelve a url cuenta como "sin story" (conjunto vacío):
+    # mismo trato que una url que hoy no está en ningún clúster.
+    conjuntos = [stories_por_url.get(url_por_id.get(aid), set()) for aid in aids]
     huerfanos = [aid for aid, s in zip(aids, conjuntos) if not s]
     if huerfanos:
         return ("sin_story", None,
                 f"{len(huerfanos)}/{len(aids)} artículos no están en ningún clúster")
 
-    candidatas = set.intersection(*conjuntos)
+    # Universo de stories a probar: unión de las que tocan estos artículos.
+    # Filtrado con contiene_todos (no set.intersection directo) para que fase 0
+    # y fase 1 pasen literalmente por el mismo predicado — ver su docstring.
+    universo = set.union(*conjuntos)
+    candidatas = {sid for sid in universo if contiene_todos(sid, aids, url_por_id, stories_por_url)}
     if not candidatas:
         # Cada artículo está en alguna story, pero ninguna las tiene todas:
         # el día quedó repartido entre clústeres.
-        repartido = sorted({sid for s in conjuntos for sid in s})
+        repartido = sorted(universo)
         return ("repartida", None,
                 f"el día quedó repartido entre {len(repartido)} clústeres")
 
@@ -159,14 +295,17 @@ def clasificar(huerfana, pertenencia, dias_ocupados):
     return "revinculable", sid, ""
 
 
-def mayoritaria(huerfana, pertenencia):
+def mayoritaria(huerfana, url_por_id, stories_por_url):
     """Criterio ALTERNATIVO, sólo para el informe: la story que más artículos
     comparte. Es el que usó el diag SQL. Se reporta al lado del criterio
     estricto para que la diferencia entre ambos sea visible y decidible con
     datos, en vez de que el script parezca 'no cuadrar' con el diag."""
     conteo = defaultdict(int)
     for aid in (huerfana.get("article_ids") or []):
-        for sid in pertenencia.get(aid, set()):
+        url = url_por_id.get(aid)
+        if url is None:
+            continue
+        for sid in stories_por_url.get(url, set()):
             conteo[sid] += 1
     if not conteo:
         return None
@@ -177,17 +316,69 @@ def mayoritaria(huerfana, pertenencia):
 # Ejecución
 # =======================================================================
 
-def revincular(aplicar=False, verbose=False):
+def revincular(aplicar=False, verbose=False, debug_un_caso=False):
+    # ── Fase 0: invalidar ──────────────────────────────────────────────
+    vinculadas = cargar_vinculadas()
     huerfanas = cargar_huerfanas()
-    print(f"[revincular] {len(huerfanas)} filas con story_id NULL")
-    if not huerfanas:
-        return
+    print(f"[revincular] {len(vinculadas)} filas vinculadas, {len(huerfanas)} con story_id NULL")
 
-    todos_aids = {aid for h in huerfanas for aid in (h.get("article_ids") or [])}
-    pertenencia = cargar_pertenencia(todos_aids)
-    dias_ocupados = cargar_dias_ocupados()
-    print(f"[revincular] {len(todos_aids)} artículos consultados, "
-          f"{len(dias_ocupados)} días ya ocupados")
+    todos_aids = {aid for h in vinculadas + huerfanas for aid in (h.get("article_ids") or [])}
+    url_por_id = cargar_url_por_id(todos_aids)
+    stories_por_url = cargar_pertenencia_por_url()
+    print(f"[revincular] {len(todos_aids)} article_ids referenciados "
+          f"({len(url_por_id)} resueltos a url), "
+          f"{len(stories_por_url)} urls en clústeres vigentes")
+
+    a_invalidar = clasificar_invalidaciones(vinculadas, url_por_id, stories_por_url,
+                                             debug=debug_un_caso)
+    print(f"\n[revincular] fase 0 — invalidar: {len(a_invalidar)} vínculo(s) "
+          f"ya no cumplen contención total")
+    if verbose:
+        for f in a_invalidar:
+            print(f"    {f['id']} ({str(f['dia'])[:10]}, story {f['story_id'][:8]}…) "
+                  f"— ya no contiene todos sus artículos")
+
+    invalidadas = fallidas_invalidar = 0
+    invalidadas_ok = set()
+    if aplicar:
+        for f in a_invalidar:
+            try:
+                sb.table("resumenes_dia").update({"story_id": None}).eq("id", f["id"]).execute()
+                invalidadas += 1
+                invalidadas_ok.add(f["id"])
+            except Exception as e:
+                fallidas_invalidar += 1
+                print(f"    FALLO al invalidar {f['id']}: {e}")
+        print(f"[revincular] {invalidadas} invalidada(s), {fallidas_invalidar} fallida(s)")
+        # RELEER el estado real: la fase 1 debe ver las filas que la fase 0
+        # ACABA de liberar, no una foto tomada antes de escribir (BITACORA
+        # 2026-08-26 — un guard contra una foto no protege de lo que el propio
+        # lote está escribiendo). Una re-lectura real también hereda
+        # correctamente los fallos parciales: si una invalidación falló, esa
+        # fila sigue vinculada en la base y así aparece acá.
+        huerfanas = cargar_huerfanas()
+    else:
+        if a_invalidar:
+            print(f"[revincular] DRY-RUN: no se invalidó nada; se simula su "
+                  f"liberación para que el reporte de fase 1 sea honesto.")
+        invalidadas = len(a_invalidar)   # cifra "se invalidarían", para el reporte
+        invalidadas_ok = {f["id"] for f in a_invalidar}
+        huerfanas = huerfanas + [{**f, "story_id": None} for f in a_invalidar]
+
+    # dias_ocupados se deriva del MISMO snapshot de `vinculadas`, restando solo
+    # lo que realmente quedó invalidado (aplicado o simulado según el modo) —
+    # no una segunda query que pudiera ver un estado distinto al que acabamos
+    # de razonar sobre arriba.
+    dias_ocupados = {
+        (f["story_id"], str(f["dia"])[:10])
+        for f in vinculadas if f["id"] not in invalidadas_ok
+    }
+
+    # ── Fase 1: re-vincular huérfanas (incluye las liberadas arriba) ────
+    if not huerfanas:
+        print(f"\n[revincular] invalidadas={invalidadas} · revinculadas=0 · "
+              f"repartidas=0 · sin_story=0")
+        return
 
     cuentas = defaultdict(int)
     # (story_id, dia) -> [(n_articulos, fila_id)] — se agrupa ANTES de escribir.
@@ -197,25 +388,25 @@ def revincular(aplicar=False, verbose=False):
     rescatables_por_mayoria = 0
 
     for h in huerfanas:
-        clase, sid, detalle = clasificar(h, pertenencia, dias_ocupados)
+        clase, sid, detalle = clasificar(h, url_por_id, stories_por_url, dias_ocupados)
         cuentas[clase] += 1
         if clase == "revinculable":
             candidatas[(sid, str(h["dia"])[:10])].append(
                 (len(h.get("article_ids") or []), h["id"]))
         else:
-            if clase in ("repartida", "ambigua") and mayoritaria(h, pertenencia):
+            if clase in ("repartida", "ambigua") and mayoritaria(h, url_por_id, stories_por_url):
                 rescatables_por_mayoria += 1
         if verbose and clase != "revinculable":
             print(f"    {h['id']} ({str(h['dia'])[:10]}) — {clase}: {detalle}")
 
-    # Desempate INTRA-LOTE. `dias_ocupados` es una foto tomada al inicio: no ve
-    # las filas que este mismo bucle está por escribir. Dos huérfanas distintas
-    # pueden ser dos composiciones viejas del MISMO día bajo la MISMA story —
-    # ambas pasan el guard `superada` y ambas se escribirían, creando justo el
-    # duplicado que el guard existe para evitar.
-    # NO es teórico: en la corrida del 2026-08-23 esta ausencia creó el duplicado
-    # de e1369247 / 2026-08-21. Gana la composición más completa; el resto se
-    # cuenta y se reporta, nunca se descarta en silencio.
+    # Desempate INTRA-LOTE. `dias_ocupados` es una foto tomada al inicio de esta
+    # fase: no ve las filas que este mismo bucle está por escribir. Dos
+    # huérfanas distintas pueden ser dos composiciones viejas del MISMO día
+    # bajo la MISMA story — ambas pasan el guard `superada` y ambas se
+    # escribirían, creando justo el duplicado que el guard existe para evitar.
+    # NO es teórico: en la corrida del 2026-08-23 esta ausencia creó el
+    # duplicado de e1369247 / 2026-08-21. Gana la composición más completa; el
+    # resto se cuenta y se reporta, nunca se descarta en silencio.
     a_escribir = []
     for (sid, dia), grupo in candidatas.items():
         grupo.sort(key=lambda t: (-t[0], t[1]))   # más artículos primero; id desempata estable
@@ -227,7 +418,7 @@ def revincular(aplicar=False, verbose=False):
                   f"{len(grupo) - 1} descartada(s): "
                   f"{', '.join(fid for _, fid in grupo[1:])}")
 
-    print("\n[revincular] clasificación:")
+    print("\n[revincular] clasificación (fase 1):")
     for clase in ("revinculable", "colision_lote", "superada", "repartida",
                   "ambigua", "sin_story", "sin_articulos"):
         if cuentas[clase]:
@@ -244,6 +435,8 @@ def revincular(aplicar=False, verbose=False):
     if not aplicar:
         print(f"\n[revincular] DRY-RUN: no se escribió nada. "
               f"{len(a_escribir)} filas se re-vincularían. Usá --aplicar para escribir.")
+        print(f"\n[revincular] invalidadas={invalidadas} · revinculadas={len(a_escribir)} · "
+              f"repartidas={cuentas['repartida']} · sin_story={cuentas['sin_story']}")
         return
 
     escritas = fallidas = 0
@@ -256,14 +449,22 @@ def revincular(aplicar=False, verbose=False):
             print(f"    FALLO al re-vincular {fila_id}: {e}")
     print(f"\n[revincular] {escritas} re-vinculadas, {fallidas} falladas")
 
+    print(f"\n[revincular] invalidadas={invalidadas} · revinculadas={escritas} · "
+          f"repartidas={cuentas['repartida']} · sin_story={cuentas['sin_story']}")
+
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(
-        description="Re-vincula filas de resumenes_dia con story_id NULL. "
-                    "Corre DESPUÉS del clustering, nunca en paralelo.")
+        description="Fase 0: invalida vínculos de resumenes_dia que ya no cumplen "
+                    "contención total. Fase 1: re-vincula lo que queda (o quedó) con "
+                    "story_id NULL. Corre DESPUÉS del clustering, nunca en paralelo.")
     p.add_argument("--aplicar", action="store_true",
                    help="escribe de verdad; sin esto es dry-run")
     p.add_argument("--verbose", action="store_true",
-                   help="imprime una línea por cada fila NO re-vinculada")
+                   help="imprime una línea por cada fila invalidada y por cada huérfana NO re-vinculada")
+    p.add_argument("--debug-un-caso", action="store_true",
+                   help="imprime, para UN vínculo vigente arbitrario, los dos conjuntos "
+                        "exactos (tipo y tamaño) que contiene_todos() compara — "
+                        "diagnóstico previo a confiar en el resultado")
     args = p.parse_args()
-    revincular(aplicar=args.aplicar, verbose=args.verbose)
+    revincular(aplicar=args.aplicar, verbose=args.verbose, debug_un_caso=args.debug_un_caso)
